@@ -11,7 +11,7 @@
 
 ## NUC 수동 기동 (최초 확인용)
 
-아래 경로는 **예시**입니다. 실제 NUC에 있는 팀 작업 공간/배포 경로를 지정해야 합니다.
+아래 경로는 **예시**입니다. 실제 NUC에 있는 팀 작업 공간/배포 경로를 지정해야 합니다. `--pid-scripts`가 `source-linux/src/pid/scripts`이면 기본 `--routes-dir`는 `source-linux/routes/route2_manual_20261031`로 계산되며, `pid_drive_check.py` 및 FF–PID가 사용하는 경로와 동일합니다. 별도로 `--routes-dir`를 지정할 때도 이 동일한 경로를 사용하세요.
 
 ```bash
 source /opt/ros/noetic/setup.bash
@@ -19,7 +19,7 @@ source /path/to/ROS_workspace/devel/setup.bash
 
 python3 nuc/pid_bt_bridge.py \
   --pid-scripts /path/to/team_workspace/src/pid/scripts \
-  --routes-dir /path/to/UNICON_wheelchair_PID/waypoints/route2_manual_20261031 \
+  --routes-dir /path/to/source-linux/routes/route2_manual_20261031 \
   --channel 7
 ```
 
