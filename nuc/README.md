@@ -39,9 +39,22 @@ NUC OS에 `python3-dbus`, `python3-gi`와 BlueZ가 설치되어 있어야 합니
 | `{"command":"estop"}` | 소프트웨어 정지 요청 후 재출발 금지 래치 |
 | `{"command":"estop_release"}` | 앱 측 소프트웨어 래치만 해제하며 주행 재개는 하지 않음 |
 | `{"command":"route"}` | 현재 선택 경로 지도 전송 |
+| `{"command":"status"}` | 현재 통합 상태 재전송 |
 | `{"command":"ping"}` | 링크 확인 |
 
 `drive_start`가 시작하는 `pid_drive.sh`는 **장시간 유지**되며, Bluetooth 세션이 끊어져도 프로세스를 종료하지 않습니다. PID 주행 종료/정지는 기존 스크립트에서 처리합니다. 새 브릿지는 `/cmd_vel`을 발행하지 않습니다.
+
+## 출발 검사 / 주행 상태 이벤트
+
+2026-11-09 PID `main` 병합 버전(`1305a56`)의 실제 표준 출력을 그대로 파싱합니다.
+
+- `drive_preflight`: 정차 위치·방향 1.0m / 30° 검사 결과. `ok=false`일 때 `turn_direction`, `approach_m`, `guidance` 등이 포함됩니다.
+- `drive_event`: `STARTED/START_CONFIRMED`는 셸 실행·ROS START 서비스 승인입니다. 앱은 이것만으로 실제 주행 성공으로 판단하지 않습니다.
+- `drive_result`: 브릿지가 발행하며 `status=STARTED, reason=ROS_RUNNING`일 때 해당 경로의 **실제 /ff_pid/status RUNNING**이 확인된 것입니다. `status=REJECTED`는 시작 거부, `STOPPED`는 pid_stop.sh 정차 확인, `STOP_UNVERIFIED`는 정차 확인 실패를 뜻합니다.
+- `job_result`: READY/DRIVE 시작·종료 등 백그라운드 작업의 결과/종료 코드.
+- `type=ack, ok=true`: **명령 접수**를 뜻하며, READY 완료·모터 주행·정지 성공을 뜻하지 않습니다.
+
+연결되어 있는 동안 이벤트는 순서번호 `seq`와 함께 전송됩니다. 재연결 후에는 명령을 임의로 재실행하지 않고 주기적인 `telemetry`에서 마지막 이벤트와 실제 토픽 상태를 다시 확인합니다. 브릿지 종료 또는 NUC 재부팅 이후의 주행 상태 복원과 실기 테스트는 아직 검증되지 않았습니다.
 
 ## 수신 텔레메트리
 
@@ -53,7 +66,7 @@ NUC OS에 `python3-dbus`, `python3-gi`와 BlueZ가 설치되어 있어야 합니
 - `/wheel_status`
 - `/fast_lio_icp/localization_diagnostics`
 
-**현재 단계:** 브릿지의 최초 소스와 Android 전용 UUID를 저장소에 반영했습니다. 이 프로토콜에 맞춘 Android 두 화면, READY 상세 모니터링 UI, 실제 NUC 동작 검증 및 systemd 등록은 아직 완료되지 않았습니다.
+**현재 단계:** 브릿지에서 병합된 출발 검사·주행 이벤트를 수신하도록 보완했습니다. Android 두 화면, READY 상세 상태·시스템 진단의 최종 검증, 실기 NUC 동작 검증 및 systemd 등록은 아직 완료되지 않았습니다.
 
 ## 원본 코드
 
