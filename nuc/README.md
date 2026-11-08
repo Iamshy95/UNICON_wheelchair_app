@@ -19,7 +19,7 @@ source /path/to/ROS_workspace/devel/setup.bash
 
 python3 nuc/pid_bt_bridge.py \
   --pid-scripts /path/to/team_workspace/src/pid/scripts \
-  --routes-dir /path/to/team_workspace/routes/route2_manual_20261031 \
+  --routes-dir /path/to/UNICON_wheelchair_PID/waypoints/route2_manual_20261031 \
   --channel 7
 ```
 
@@ -38,7 +38,7 @@ NUC OS에 `python3-dbus`, `python3-gi`와 BlueZ가 설치되어 있어야 합니
 | `{"command":"drive_stop"}` | `pid_stop.sh` 실행 |
 | `{"command":"estop"}` | 소프트웨어 정지 요청 후 재출발 금지 래치 |
 | `{"command":"estop_release"}` | 앱 측 소프트웨어 래치만 해제하며 주행 재개는 하지 않음 |
-| `{"command":"route"}` | 현재 선택 경로 지도 전송 |
+| `{"command":"route"}` | 현재 선택 경로 좌표(JSON waypoints, 지도 이미지 아님) 전송 |
 | `{"command":"status"}` | 현재 통합 상태 재전송 |
 | `{"command":"ping"}` | 링크 확인 |
 
