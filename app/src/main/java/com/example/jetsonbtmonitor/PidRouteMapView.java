@@ -1,110 +1,63 @@
 package com.example.jetsonbtmonitor;
 
 import android.content.Context;
-import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
-import android.graphics.RectF;
 import android.util.AttributeSet;
-import android.util.Base64;
 import android.view.View;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.util.zip.InflaterInputStream;
-
-/** Displays the NUC's current drivable-mask map, selected map-frame route, and chair centre. */
+/**
+ * Route-only map-frame visualization.
+ *
+ * The route is the actual XY path sent by the NUC; the chair is the current
+ * /fast_lio_icp/pose. No PGM, external map image or fake emulator geometry.
+ * The ROS map frame uses +Y up; Android Canvas uses +Y down.
+ */
 public final class PidRouteMapView extends View {
+    private static final int NAVY = Color.rgb(31, 49, 68);
+    private static final int BLUE = Color.rgb(0, 111, 209);
+    private static final int GREEN = Color.rgb(17, 137, 92);
+    private static final int MUTED = Color.rgb(119, 132, 148);
+    private static final int GRID = Color.rgb(232, 238, 245);
+
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path routePath = new Path();
-    private final RectF bitmapDst = new RectF();
-    private Bitmap mask;
-    private float maskX, maskY, maskResolution;
-    private float[] xs = new float[0], ys = new float[0];
+    private final Path arrowPath = new Path();
+    private float[] xs = new float[0];
+    private float[] ys = new float[0];
     private boolean hasPose;
     private float poseX, poseY, poseYaw;
-    private boolean poseFresh;
     private String routeName = "";
-    private final int navy = Color.rgb(25, 46, 64);
-    private final int routeColor = Color.rgb(0, 111, 209);
-    private final int chairColor = Color.rgb(19, 142, 98);
 
     public PidRouteMapView(Context context) { super(context); }
     public PidRouteMapView(Context context, AttributeSet attrs) { super(context, attrs); }
 
-    /** Waypoints are JSON OBJECTS {x,y}, not the old bridge's [x,y] arrays. */
+    /** Each waypoint is an object like {"x": 12.3, "y": -4.5}. */
     public void setRoute(String name, JSONArray points) {
-        routeName = name;
-        if (points == null || points.length() == 0) {
-            xs = new float[0];
-            ys = new float[0];
-        } else {
-            int n = points.length();
-            xs = new float[n];
-            ys = new float[n];
-            for (int i = 0; i < n; i++) {
-                JSONObject p = points.optJSONObject(i);
-                xs[i] = p == null ? 0f : (float) p.optDouble("x", 0);
-                ys[i] = p == null ? 0f : (float) p.optDouble("y", 0);
+        routeName = name == null ? "" : name;
+        int n = points == null ? 0 : points.length();
+        xs = new float[n];
+        ys = new float[n];
+        for (int i = 0; i < n; i++) {
+            JSONObject p = points.optJSONObject(i);
+            if (p != null) {
+                xs[i] = (float) p.optDouble("x", 0);
+                ys[i] = (float) p.optDouble("y", 0);
             }
         }
         invalidate();
     }
 
-    /** The map is PGM bytes downsampled on NUC and zlib/base64 encoded. */
-    public void setMap(JSONObject json) throws Exception {
-        if (!"zlib-gray8".equals(json.optString("encoding"))) {
-            throw new IllegalArgumentException("Unsupported map encoding");
-        }
-        final int width = json.getInt("width"), height = json.getInt("height");
-        if (width < 1 || height < 1 || width > 1000 || height > 1000) {
-            throw new IllegalArgumentException("Invalid map dimensions");
-        }
-        byte[] packed = Base64.decode(json.getString("pixels"), Base64.DEFAULT);
-        ByteArrayOutputStream out = new ByteArrayOutputStream(width * height);
-        try (InflaterInputStream inflater = new InflaterInputStream(
-                new ByteArrayInputStream(packed))) {
-            byte[] part = new byte[8192];
-            int count;
-            while ((count = inflater.read(part)) != -1) {
-                if (out.size() + count > width * height) {
-                    throw new IllegalArgumentException("Oversized map pixels");
-                }
-                out.write(part, 0, count);
-            }
-        }
-        byte[] pixels = out.toByteArray();
-        if (pixels.length != width * height) {
-            throw new IllegalArgumentException("Map size mismatch");
-        }
-        int[] colors = new int[pixels.length];
-        for (int i = 0; i < pixels.length; i++) {
-            int v = pixels[i] & 0xff;
-            // Show free/drivable corridor light, mask boundaries dark.
-            colors[i] = Color.rgb(v, v, v);
-        }
-        Bitmap newMask = Bitmap.createBitmap(colors, width, height, Bitmap.Config.ARGB_8888);
-        Bitmap old = mask;
-        mask = newMask;
-        maskX = (float) json.getDouble("origin_x");
-        maskY = (float) json.getDouble("origin_y");
-        maskResolution = (float) json.getDouble("resolution");
-        if (old != null) old.recycle();
-        invalidate();
-    }
-
+    /** Hide the location when disconnected/stale; never draw an old pose as live. */
     public void setPose(JSONObject pose) {
-        if (pose == null || !pose.has("x") || !pose.has("y")) {
-            hasPose = false;
-            poseFresh = false;
-        } else {
-            hasPose = true;
-            poseFresh = true;
+        hasPose = pose != null && !pose.isNull("x") && !pose.isNull("y")
+                && pose.has("x") && pose.has("y");
+        if (hasPose) {
             poseX = (float) pose.optDouble("x", 0);
             poseY = (float) pose.optDouble("y", 0);
             poseYaw = (float) pose.optDouble("yaw_deg", 0);
@@ -114,88 +67,134 @@ public final class PidRouteMapView extends View {
 
     @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        float w = getWidth(), h = getHeight();
-        canvas.drawColor(Color.rgb(245, 248, 251));
+        canvas.drawColor(Color.rgb(249, 251, 254));
+        final float w = getWidth(), h = getHeight();
         if (w <= 0 || h <= 0) return;
-        float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE;
-        float maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
-        if (mask != null && maskResolution > 0) {
-            minX = Math.min(minX, maskX);
-            minY = Math.min(minY, maskY);
-            maxX = Math.max(maxX, maskX + mask.getWidth() * maskResolution);
-            maxY = Math.max(maxY, maskY + mask.getHeight() * maskResolution);
+
+        if (xs.length < 2) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setColor(NAVY);
+            paint.setTextSize(sp(15));
+            canvas.drawText("경로 데이터 대기 중", w * 0.5f, h * 0.5f - dp(8), paint);
+            paint.setColor(MUTED);
+            paint.setTextSize(sp(12));
+            canvas.drawText("NUC Bluetooth 연결 후 경로를 수신합니다.",
+                    w * 0.5f, h * 0.5f + dp(17), paint);
+            return;
         }
+
+        float minX = Float.POSITIVE_INFINITY, minY = Float.POSITIVE_INFINITY;
+        float maxX = Float.NEGATIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY;
         for (int i = 0; i < xs.length; i++) {
             minX = Math.min(minX, xs[i]); maxX = Math.max(maxX, xs[i]);
             minY = Math.min(minY, ys[i]); maxY = Math.max(maxY, ys[i]);
         }
-        if (hasPose && minX != Float.MAX_VALUE) {
-            minX = Math.min(minX, poseX); maxX = Math.max(maxX, poseX);
-            minY = Math.min(minY, poseY); maxY = Math.max(maxY, poseY);
-        }
-        if (minX == Float.MAX_VALUE) {
-            paint.setColor(Color.GRAY); paint.setTextSize(36f);
-            paint.setTextAlign(Paint.Align.CENTER);
-            canvas.drawText("지도를 수신하지 않았습니다", w / 2, h / 2, paint);
-            return;
-        }
-        float spanX = Math.max(2f, maxX - minX);
-        float spanY = Math.max(2f, maxY - minY);
-        float margin = Math.min(34f, Math.min(w, h) * 0.07f);
-        float scale = Math.min((w - margin * 2) / spanX, (h - margin * 2) / spanY);
-        float ox = (w - spanX * scale) / 2f - minX * scale;
-        float oy = (h - spanY * scale) / 2f + maxY * scale;
+        // Fit the route, not the chair: the map must not constantly zoom/pan
+        // because a GICP pose briefly jumps far away during initialization.
+        final float routeWidth = Math.max(5f, maxX - minX);
+        final float routeHeight = Math.max(5f, maxY - minY);
+        final float margin = dp(34);
+        final float scale = Math.max(0.001f,
+                Math.min((w - margin * 2) / routeWidth,
+                         (h - margin * 2) / routeHeight));
+        final float ox = (w - (minX + maxX) * scale) * 0.5f;
+        final float oy = (h + (minY + maxY) * scale) * 0.5f;
 
-        paint.setColor(Color.rgb(225, 232, 239));
-        paint.setStrokeWidth(1);
-        float gridStep = 10f;
-        for (float gx = (float) Math.ceil(minX / gridStep) * gridStep; gx <= maxX; gx += gridStep) {
-            float xx = ox + gx * scale;
-            canvas.drawLine(xx, margin, xx, h - margin, paint);
+        // Light 10 m reference grid, not a fabricated environmental map.
+        paint.setColor(GRID);
+        paint.setStrokeWidth(dp(0.7f));
+        paint.setStyle(Paint.Style.STROKE);
+        for (float x = (float) Math.ceil(minX / 10f) * 10f; x <= maxX; x += 10f) {
+            float px = ox + x * scale;
+            canvas.drawLine(px, margin / 2f, px, h - margin / 2f, paint);
         }
-        for (float gy = (float) Math.ceil(minY / gridStep) * gridStep; gy <= maxY; gy += gridStep) {
-            float yy = oy - gy * scale;
-            canvas.drawLine(margin, yy, w - margin, yy, paint);
+        for (float y = (float) Math.ceil(minY / 10f) * 10f; y <= maxY; y += 10f) {
+            float py = oy - y * scale;
+            canvas.drawLine(margin / 2f, py, w - margin / 2f, py, paint);
         }
-        if (mask != null && maskResolution > 0) {
-            // World Y increases upwards; Android canvas Y increases downwards.
-            bitmapDst.set(ox + maskX * scale,
-                    oy - (maskY + mask.getHeight() * maskResolution) * scale,
-                    ox + (maskX + mask.getWidth() * maskResolution) * scale,
-                    oy - maskY * scale);
-            paint.setAlpha(170);
-            paint.setFilterBitmap(true);
-            canvas.drawBitmap(mask, null, bitmapDst, paint);
-            paint.setAlpha(255);
+
+        routePath.reset();
+        routePath.moveTo(ox + xs[0] * scale, oy - ys[0] * scale);
+        for (int i = 1; i < xs.length; i++) {
+            routePath.lineTo(ox + xs[i] * scale, oy - ys[i] * scale);
         }
-        if (xs.length > 1) {
-            routePath.reset();
-            routePath.moveTo(ox + xs[0] * scale, oy - ys[0] * scale);
-            for (int i = 1; i < xs.length; i++) {
-                routePath.lineTo(ox + xs[i] * scale, oy - ys[i] * scale);
-            }
-            paint.setColor(Color.WHITE);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(7f); paint.setStrokeJoin(Paint.Join.ROUND);
-            canvas.drawPath(routePath, paint);
-            paint.setColor(routeColor); paint.setStrokeWidth(4.5f);
-            canvas.drawPath(routePath, paint);
-            paint.setStyle(Paint.Style.FILL);
-        }
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(dp(8));
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setStrokeJoin(Paint.Join.ROUND);
+        paint.setColor(Color.WHITE);
+        canvas.drawPath(routePath, paint);
+        paint.setStrokeWidth(dp(4));
+        paint.setColor(BLUE);
+        canvas.drawPath(routePath, paint);
+        paint.setStyle(Paint.Style.FILL);
+
+        // Start and destination stay visible even before localization is ready.
+        marker(canvas, ox + xs[0] * scale, oy - ys[0] * scale, GREEN, "출발", w, h);
+        marker(canvas, ox + xs[xs.length - 1] * scale,
+                oy - ys[ys.length - 1] * scale, BLUE, "도착", w, h);
+
         if (hasPose) {
-            float x = ox + poseX * scale, y = oy - poseY * scale;
-            paint.setColor(Color.WHITE);
-            canvas.drawCircle(x, y, 13, paint);
-            paint.setColor(poseFresh ? chairColor : Color.GRAY);
-            canvas.drawCircle(x, y, 9, paint);
-            double a = Math.toRadians(poseYaw);
-            float dx = (float) Math.cos(a), dy = -(float) Math.sin(a);
-            paint.setStrokeWidth(5);
-            canvas.drawLine(x, y, x + dx * 24, y + dy * 24, paint);
+            float px = ox + poseX * scale, py = oy - poseY * scale;
+            // Do not place an off-map chair over a misleading clipped edge.
+            if (px >= 0 && px <= w && py >= 0 && py <= h) {
+                paint.setColor(Color.WHITE);
+                canvas.drawCircle(px, py, dp(11), paint);
+                paint.setColor(GREEN);
+                canvas.drawCircle(px, py, dp(7), paint);
+                double heading = Math.toRadians(poseYaw);
+                float ux = (float) Math.cos(heading);
+                float uy = -(float) Math.sin(heading);
+                float tx = px + ux * dp(24), ty = py + uy * dp(24);
+                paint.setColor(GREEN);
+                paint.setStrokeWidth(dp(3));
+                paint.setStrokeCap(Paint.Cap.ROUND);
+                canvas.drawLine(px, py, tx, ty, paint);
+                arrowPath.reset();
+                arrowPath.moveTo(tx, ty);
+                float sideX = -uy, sideY = ux;
+                arrowPath.lineTo(tx - ux * dp(11) + sideX * dp(6),
+                        ty - uy * dp(11) + sideY * dp(6));
+                arrowPath.lineTo(tx - ux * dp(11) - sideX * dp(6),
+                        ty - uy * dp(11) - sideY * dp(6));
+                arrowPath.close();
+                canvas.drawPath(arrowPath, paint);
+            }
         }
-        paint.setColor(navy);
+
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(NAVY);
         paint.setTextAlign(Paint.Align.LEFT);
-        paint.setTextSize(25);
-        canvas.drawText(routeName.replace("_to_", " → "), 14, 32, paint);
+        paint.setTextSize(sp(13));
+        paint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        canvas.drawText(routeName.replace("_to_", " → "), dp(14), dp(22), paint);
+        paint.setTypeface(android.graphics.Typeface.DEFAULT);
+        paint.setTextSize(sp(11));
+        paint.setColor(hasPose ? GREEN : MUTED);
+        canvas.drawText(hasPose ? "● 실시간 위치 / 방향" : "○ 현재 위치 수신 대기",
+                dp(14), h - dp(12), paint);
+    }
+
+    private void marker(Canvas c, float x, float y, int color, String label,
+                        float width, float height) {
+        paint.setColor(Color.WHITE);
+        c.drawCircle(x, y, dp(8), paint);
+        paint.setColor(color);
+        c.drawCircle(x, y, dp(5), paint);
+        paint.setColor(NAVY);
+        paint.setTextSize(sp(11));
+        paint.setTextAlign(x < width * 0.75f ? Paint.Align.LEFT : Paint.Align.RIGHT);
+        float labelX = x < width * 0.75f ? x + dp(9) : x - dp(9);
+        float labelY = Math.max(dp(36), Math.min(height - dp(28), y - dp(10)));
+        c.drawText(label, labelX, labelY, paint);
+    }
+
+    private float dp(float value) {
+        return value * getResources().getDisplayMetrics().density;
+    }
+
+    private float sp(float value) {
+        return value * getResources().getDisplayMetrics().scaledDensity;
     }
 }
