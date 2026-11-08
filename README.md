@@ -13,14 +13,14 @@
 
 **관리자:** Bluetooth 연결 버튼 및 연결 상태, READY 시작·종료, READY 진행상태 및 LiDAR·IMU·FAST-LIO·GICP·인지·휠·UART 모니터링.
 
-**탑승자:** Bluetooth 연결 상태, A·D4·D5 간 6개 경로 선택, 주행 시작·종료, 출발 거부 시 위치·방향 조정 안내, 실제 주행 중 CLEAR/SLOW/STOP와 이유, 드라이버블 마스크 지도·선택 경로·실시간 위치/방향.
+**탑승자:** Bluetooth 연결 상태, A·D4·D5 간 6개 경로 선택, 주행 시작·종료, 출발 거부 시 위치·방향 조정 안내, 실제 주행 중 CLEAR/SLOW/STOP와 이유, **배경 지도 없이** 선택 경로 선과 출발·도착 지점·실시간 위치/방향.
 
 Bluetooth 기기 선택 화면, 연결 해제 버튼, 앱 비상정지 버튼, 로그인, 카메라, 프리셋, 장애물 별도 뷰는 사용하지 않습니다. 실제 긴급 정지는 물리적 조이스틱 수단을 유지해야 합니다. 앱의 주행 종료는 `pid_stop.sh`입니다.
 
 ## 코드 구성
 
 - `app/src/main/java/com/example/jetsonbtmonitor/PidOperatorActivity.java`: **관리자/탑승자 전용 화면** 및 FF–PID 메시지 연동.
-- `app/src/main/java/com/example/jetsonbtmonitor/PidRouteMapView.java`: 새 ROS `map` 좌표계 지도·경로·위치 그리기.
+- `app/src/main/java/com/example/jetsonbtmonitor/PidRouteMapView.java`: 배경 지도 없이 ROS `map` 좌표계의 경로·현재 위치/방향 그리기.
 - `app/src/main/java/com/example/jetsonbtmonitor/BluetoothWheelchairClient.java`: Android Bluetooth Classic RFCOMM 클라이언트·자동 재연결.
 - `nuc/pid_bt_bridge.py`: 별도 UUID/RFCOMM 채널 7의 **FF–PID 전용 BlueZ/ROS1 브릿지**.
 - `nuc/README.md`: 메시지 형식 및 NUC에서 수동 시험하는 방법.
@@ -59,7 +59,7 @@ GitHub 파일은 자동으로 NUC에 설치되지 않습니다. `nuc/pid_bt_brid
 
 - 앱 화면 구성 및 지도 렌더링 코드: **작성됨**, Android Studio 빌드 확인 전.
 - 개인 PID `main`의 1.0m/30° 출발 검사 JSON 및 RUNNING 판정 브릿지 처리: **작성됨**, 실제 기기 통합시험 전.
-- 지도: NUC의 `common_drivable_mask.pgm`을 전송해 사용하도록 작성.
+- 탑승자 지도 영역: **2안 채택**. LiDAR·마스크·PNG 배경 없이 NUC에서 선택 경로 XY를 한 번 수신하고, ROS 측위로 위치/방향 화살표만 갱신. Bluetooth 미연결 시 경로 수신 대기 상태 표시.
 - 기존 운영 코드 정리: 불필요한 이전 Wi-Fi/Jetson Java, 레이아웃, 리소스, ROS2 예제는 제거했으며 Git 이력과 원본 저장소에 남습니다.
 - NUC 배포·systemd 자동실행·실기 안전 검증: **미완료**.
 
