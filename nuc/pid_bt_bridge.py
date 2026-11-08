@@ -11,6 +11,7 @@ import logging
 import math
 import os
 from pathlib import Path
+from collections import deque
 import socket
 import subprocess
 import threading
@@ -36,6 +37,101 @@ class Bridge:
         self.latest = {}
         self.ros_connected = False
         self.rospy = None
+        self._seq = 0
+        self._events = deque(maxlen=64)
+        self.job_states = {}
+        self.last_preflight = None
+        self.last_drive_event = None
+        self.drive_phase = "IDLE"
+        self.drive_requested_at = None
+        self.drive_accepted = False
+        self.drive_confirmed = False
+        self.drive_rejection_sent = False
+        self.ready_stopping = False
+        self.stop_alarm = None
+
+    def _emit(self, event):
+        """Remember structured events for every active Bluetooth session."""
+        with self.lock:
+            self._seq += 1
+            entry = dict(event)
+            entry.setdefault("stamp", time.time())
+            entry["seq"] = self._seq
+            self._events.append(entry)
+
+    def event_seq(self):
+        with self.lock:
+            return self._seq
+
+    def events_after(self, seq):
+        with self.lock:
+            return [dict(event) for event in self._events if event["seq"] > seq]
+
+    def _reject_drive(self, reason, message):
+        """Rejection is not the same thing as an accepted shell launch."""
+        with self.lock:
+            if self.drive_rejection_sent or self.drive_confirmed:
+                return
+            self.drive_rejection_sent = True
+            self.drive_phase = "REJECTED"
+            self._emit({"type": "drive_result", "status": "REJECTED",
+                        "reason": reason, "route": self.active_route,
+                        "message": message, "preflight": self.last_preflight})
+
+    def _consume_script_event(self, name, line):
+        if name != "drive" or not line.startswith("{"):
+            return
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            return
+        if not isinstance(obj, dict) or obj.get("type") not in ("drive_preflight", "drive_event"):
+            return
+        with self.lock:
+            if obj.get("route") != self.active_route:
+                LOG.warning("Ignoring mismatched drive event route: %r", obj.get("route"))
+                return
+            if obj["type"] == "drive_preflight":
+                self.last_preflight = obj
+                self._emit(obj)
+                if not obj.get("ok", False):
+                    self._reject_drive(obj.get("reason", "POSE_NOT_ALIGNED"),
+                                       obj.get("message", "출발 위치 점검 실패"))
+            else:
+                self.last_drive_event = obj
+                self._emit(obj)
+                if obj.get("status") == "STARTED":
+                    self.drive_accepted = True
+                    self.drive_phase = "START_REQUEST_ACCEPTED"
+                elif obj.get("status") == "REJECTED":
+                    self._reject_drive(obj.get("reason", "SCRIPT_CHECK_FAILED"),
+                                       obj.get("message", "주행 시작이 거부되었습니다."))
+
+    def _confirm_drive(self, drive, received_at):
+        """Only a fresh ROS RUNNING status may confirm actual start."""
+        with self.lock:
+            if (not self.drive_accepted or self.drive_confirmed or self.drive_rejection_sent
+                    or self.drive_phase == "STOPPING" or self.active_route is None
+                    or received_at < (self.drive_requested_at or float("inf"))):
+                return
+            if drive.get("state") != "RUNNING":
+                return
+            # A stale status from a previous controller must not confirm START.
+            # FF-PD node uses the ROS private parameter /ff_pid/route.
+            if not self.rospy:
+                return
+            try:
+                actual_route = self.rospy.get_param("/ff_pid/route", None)
+            except Exception:
+                return
+            if actual_route != self.active_route:
+                return
+            self.drive_confirmed = True
+            self.drive_phase = "RUNNING"
+            self._emit({"type": "drive_result", "status": "STARTED",
+                        "reason": "ROS_RUNNING", "route": self.active_route,
+                        "message": "FF-PD RUNNING 상태 확인"})
+
 
     def _script(self, filename):
         path = self.scripts / filename
@@ -44,29 +140,35 @@ class Bridge:
         return str(path)
 
     def _record_line(self, name, line):
-        line = line.rstrip()[:240]
+        line = line.rstrip()[:4096]
         with self.lock:
-            if self.job_status["name"] == name:
-                tail = self.job_status["tail"]
-                tail.append(line)
+            job = self.job_states.get(name)
+            if job is not None:
+                tail = job["tail"]
+                tail.append(line[:240])
                 del tail[:-12]
-                self.job_status["detail"] = line
+                job["detail"] = line[:240]
+                if self.job_status["name"] == name:
+                    self.job_status = dict(job)
+            self._consume_script_event(name, line)
         if line:
             LOG.info("%s: %s", name, line)
 
     def _run_job(self, name, args, long_lived=False, end_callback=None):
         with self.lock:
-            if name in self.jobs and self.jobs[name].poll() is None:
+            if self._running(name):
                 raise RuntimeError(name + " is already running")
             cmd = ["/bin/bash", self._script(args[0])] + args[1:]
-            # Separate process group: Bluetooth session loss MUST NOT kill DRIVE.
+            # A separate process session survives Bluetooth disconnects.
             proc = subprocess.Popen(
                 cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, bufsize=1,
                 start_new_session=True)
             self.jobs[name] = proc
-            self.job_status = {"name": name, "state": "RUNNING",
-                               "detail": " ".join(args), "tail": []}
+            state = {"name": name, "state": "RUNNING",
+                     "detail": " ".join(args), "tail": []}
+            self.job_states[name] = state
+            self.job_status = dict(state)
 
         def follow():
             try:
@@ -82,25 +184,77 @@ class Bridge:
             with self.lock:
                 if self.jobs.get(name) is proc:
                     self.jobs.pop(name, None)
-                if self.job_status["name"] == name:
-                    self.job_status["state"] = "SUCCEEDED" if code == 0 else "FAILED"
-                    self.job_status["detail"] += " [exit %s]" % code
+                job = self.job_states.get(name)
+                if job is not None:
+                    job["state"] = "SUCCEEDED" if code == 0 else "FAILED"
+                    job["exit_code"] = code
+                    if self.job_status["name"] == name:
+                        self.job_status = dict(job)
                 if name == "ready_start":
                     self.ready_state = "READY" if code == 0 else "FAILED"
-                elif name == "ready_stop" and code == 0:
-                    self.ready_state = "STOPPED"
-                elif name == "drive" and self.active_route is not None:
+                elif name == "ready_stop":
+                    self.ready_stopping = False
+                    if code == 0:
+                        self.ready_state = "STOPPED"
+                elif name == "drive":
+                    if not self.drive_confirmed:
+                        self._reject_drive("SCRIPT_FAILED",
+                                           (job or {}).get("detail", "DRIVE script exited"))
+                    elif self.drive_phase != "STOPPING":
+                        self.drive_phase = "FINISHED"
                     self.active_route = None
+                elif name == "drive_stop":
+                    if code == 0:
+                        self.drive_phase = "STOPPED"
+                        self.active_route = None
+                        self._emit({"type": "drive_result", "status": "STOPPED",
+                                    "reason": "STOP_VERIFIED",
+                                    "message": "MANUAL 및 정차 확인 완료"})
+                    else:
+                        self._emit({"type": "drive_result", "status": "STOP_UNVERIFIED",
+                                    "reason": "STOP_SCRIPT_FAILED",
+                                    "message": "실제 정지를 확인하지 못했습니다.",
+                                    "exit_code": code})
+                self._emit({"type": "job_result", "job": name,
+                            "ok": code == 0, "exit_code": code,
+                            "detail": (job or {}).get("detail", "")})
             if end_callback:
                 end_callback(code)
             LOG.info("%s exited %s", name, code)
 
         threading.Thread(target=follow, daemon=True, name="job_" + name).start()
-        return {"ok": True, "detail": name + " started"}
+        return {"ok": True, "detail": name + " requested (not yet confirmed)"}
 
     def _running(self, name):
         p = self.jobs.get(name)
         return p is not None and p.poll() is None
+
+    def _shutdown_ready(self):
+        """Verify stopped MANUAL wheels before READY stack teardown."""
+        try:
+            with self.lock:
+                active = (self._running("drive") or self._running("drive_stop")
+                          or self.drive_phase in ("RUNNING", "START_REQUEST_ACCEPTED", "STOPPING"))
+            if active:
+                command = ["/bin/bash", self._script("pid_stop.sh")]
+                stopped = subprocess.run(command, stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                         text=True, timeout=35)
+                self._emit({"type": "job_result", "job": "ready_pre_stop",
+                            "ok": stopped.returncode == 0,
+                            "exit_code": stopped.returncode,
+                            "detail": stopped.stdout[-1200:]})
+                if stopped.returncode != 0:
+                    raise RuntimeError("주행 정지가 확인되지 않아 READY 종료를 취소했습니다.")
+            self._run_job("ready_stop", ["pid_ready.sh", "stop"])
+        except Exception as exc:
+            LOG.warning("READY stop refused: %s", exc)
+            self._emit({"type": "job_result", "job": "ready_stop",
+                        "ok": False, "detail": str(exc)})
+        finally:
+            with self.lock:
+                self.ready_stopping = False
+
 
     def _route_frame(self):
         with self.lock:
@@ -154,15 +308,25 @@ class Bridge:
                                              ["pid_ready.sh", "status"]))
             elif command == "ready_stop":
                 with self.lock:
-                    if self._running("drive"):
-                        raise RuntimeError("Stop DRIVE first")
-                response.update(self._run_job("ready_stop",
-                                             ["pid_ready.sh", "stop"]))
+                    if self.ready_stopping or self._running("ready_stop"):
+                        raise RuntimeError("READY shutdown already requested")
+                    if self._running("ready_start") or self._running("drive_stop"):
+                        raise RuntimeError("READY startup or DRIVE stop still in progress")
+                    self.ready_stopping = True
+                    self.ready_state = "STOPPING"
+                threading.Thread(target=self._shutdown_ready, daemon=True,
+                                 name="ready_shutdown").start()
+                response.update(ok=True, detail="READY shutdown requested")
+            elif command == "status":
+                response.update(ok=True, detail="Current telemetry follows")
+                extra = self.telemetry()
             elif command == "drive_start":
                 name = payload.get("route", self.selected_route)
                 if name not in ROUTES:
                     raise ValueError("Invalid route")
                 with self.lock:
+                    if self.ready_stopping or self._running("ready_stop"):
+                        raise RuntimeError("READY shutdown in progress")
                     if self.estop_latched:
                         raise RuntimeError("E-STOP latched; release separately")
                     if self._running("drive") or self._running("drive_stop"):
@@ -172,15 +336,30 @@ class Bridge:
                     self.selected_route = name
                 # Check matching map route asset before attempting to move.
                 extra = self._route_frame()
-                response.update(self._run_job("drive", ["pid_drive.sh", name],
-                                              long_lived=True))
                 with self.lock:
                     self.active_route = name
-            elif command in ("drive_stop", "stop", "estop"):
-                if command == "estop":
+                    self.drive_phase = "CHECKING"
+                    self.drive_requested_at = time.monotonic()
+                    self.drive_accepted = False
+                    self.drive_confirmed = False
+                    self.drive_rejection_sent = False
+                    self.last_preflight = None
+                    self.last_drive_event = None
+                try:
+                    response.update(self._run_job("drive", ["pid_drive.sh", name],
+                                                  long_lived=True))
+                except Exception:
                     with self.lock:
+                        self.active_route = None
+                        self.drive_phase = "FAILED"
+                    raise
+            elif command in ("drive_stop", "stop", "estop"):
+                with self.lock:
+                    if command == "estop":
                         self.estop_latched = True
-                # pid_stop.sh handles /ff_pid/start false, MANUAL, wheel verification.
+                    self.drive_phase = "STOPPING"
+                # pid_stop.sh requests MANUAL, controller pause and verifies wheels.
+                # Run immediately without waiting for the DRIVE watch process.
                 response.update(self._run_job("drive_stop", ["pid_stop.sh"]))
             elif command == "estop_release":
                 with self.lock:
@@ -201,7 +380,10 @@ class Bridge:
         try:
             value = json.loads(msg.data)
             if isinstance(value, dict):
+                stamp = time.monotonic()
                 self._store(key, value)
+                if key == "drive":
+                    self._confirm_drive(value, stamp)
         except (ValueError, TypeError):
             LOG.warning("Invalid %s JSON", key)
 
@@ -218,6 +400,9 @@ class Bridge:
         self._store("wheel", {"mode": mode,
                               "mode_name": {65: "AUTO", 77: "MANUAL"}.get(mode, "UNKNOWN")})
 
+    def _signal_cb(self, key, msg):
+        self._store(key, {"received": True})
+
     def _diag_cb(self, msg):
         for d in msg.status:
             if d.message:
@@ -232,6 +417,9 @@ class Bridge:
             from std_msgs.msg import String, Int16MultiArray
             from geometry_msgs.msg import PoseWithCovarianceStamped
             from diagnostic_msgs.msg import DiagnosticArray
+            from nav_msgs.msg import Odometry
+            from sensor_msgs.msg import Imu
+            from visualization_msgs.msg import MarkerArray
         except ImportError as exc:
             LOG.error("ROS Noetic imports missing: %s", exc)
             return
@@ -254,6 +442,19 @@ class Bridge:
                                  self._wheel_cb, queue_size=2)
                 rospy.Subscriber("/fast_lio_icp/localization_diagnostics", DiagnosticArray,
                                  self._diag_cb, queue_size=2)
+                # READY monitoring uses topic freshness only; readiness authorization
+                # remains in pid_ready_monitor.py --check-ready.
+                for key, topic, typ in (
+                    ("lidar", "/livox/lidar", rospy.AnyMsg),
+                    ("imu", "/livox/imu", Imu),
+                    ("fast_lio", "/Odometry", Odometry),
+                    ("perception", "/perception/objects_summary", String),
+                    ("exclusion", "/perception/dynamic_boxes", MarkerArray),
+                    ("uart", "/uart_tx_diag", String),
+                ):
+                    rospy.Subscriber(topic, typ,
+                                     lambda msg, k=key: self._signal_cb(k, msg),
+                                     queue_size=1)
                 self.rospy = rospy
                 self.ros_connected = True
                 LOG.info("ROS1 subscriptions attached")
@@ -269,25 +470,46 @@ class Bridge:
                 value = self.latest.get(key)
                 return value[1] if value and now - value[0] <= ttl else None
 
+            def health(key, ttl):
+                return "OK" if fresh(key, ttl) is not None else "STALE"
+
             safety = fresh("safety", 1.5)
             drive = fresh("drive", 1.5)
             pose = fresh("pose", 1.5)
-            wheel = fresh("wheel", 1.5)
+            wheel = fresh("wheel", 2.5)
             gicp = fresh("gicp", 5.0)
-            route = self.active_route
             if drive and isinstance(drive.get("pose_used"), (tuple, list)) and len(drive["pose_used"]) == 3:
                 x, y, yaw = drive["pose_used"]
-                pose = {"x": x, "y": y, "yaw_deg": math.degrees(yaw),
-                        "source": "FF_PID", "frame": "map"}
+                if all(isinstance(v, (int, float)) and math.isfinite(v) for v in (x, y, yaw)):
+                    pose = {"x": x, "y": y, "yaw_deg": math.degrees(yaw),
+                            "source": "FF_PID", "frame": "map"}
+            phase = self.drive_phase
+            if phase == "RUNNING" and not drive:
+                phase = "STATUS_STALE"
             return {
                 "type": "telemetry", "protocol_version": 4, "stamp": time.time(),
-                "ros_connected": self.ros_connected,
-                "ready": {"state": self.ready_state, "gicp": gicp,
-                          "job": dict(self.job_status)},
+                "ros_connected": self.ros_connected and bool(self.rospy),
+                "ready": {
+                    "state": self.ready_state, "gicp": gicp,
+                    "components": {
+                        "LiDAR": health("lidar", 2.0), "IMU": health("imu", 2.0),
+                        "FAST-LIO": health("fast_lio", 2.0),
+                        "Map Pose": health("pose", 2.0),
+                        "GICP Diagnostics": health("gicp", 5.0),
+                        "Perception": health("perception", 2.5),
+                        "GICP Exclusions": health("exclusion", 2.5),
+                        "Wheel Status": health("wheel", 2.5),
+                        "UART Diagnostics": health("uart", 2.5),
+                    },
+                    "jobs": {k: dict(v) for k, v in self.job_states.items()},
+                },
                 "selected_route": self.selected_route,
-                "active_route": route,
-                "drive_state": (drive or {}).get("state", "NOT_RUNNING"),
-                "drive": drive,
+                "active_route": self.active_route,
+                "drive_state": (drive or {}).get("state", "UNKNOWN"),
+                "drive_phase": phase,
+                "drive_confirmed": self.drive_confirmed,
+                "drive": drive, "last_preflight": self.last_preflight,
+                "last_drive_event": self.last_drive_event,
                 "safety": safety,
                 "pose": pose, "wheel": wheel,
                 "estop_latched": self.estop_latched,
@@ -301,6 +523,7 @@ class Session:
         self.write_lock = threading.Lock()
         self.alive = threading.Event()
         self.alive.set()
+        self.event_cursor = bridge.event_seq()
 
     def send(self, payload):
         try:
@@ -316,9 +539,12 @@ class Session:
     def serve(self):
         def broadcast():
             while self.alive.is_set():
+                for event in self.bridge.events_after(self.event_cursor):
+                    if not self.send(event):
+                        return
+                    self.event_cursor = event["seq"]
                 if not self.send(self.bridge.telemetry()):
                     return
-                self.alive.wait(0.0)
                 time.sleep(0.5)
 
         thread = threading.Thread(target=broadcast, daemon=True)
