@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class BluetoothWheelchairClient {
     private static final UUID SERIAL_PORT_PROFILE_UUID =
-            UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
+            UUID.fromString("9a1f17cc-18d2-45f0-b6e7-1b0e257a902e");
     private static final int[] DIRECT_RFCOMM_CHANNELS = {1, 2, 3, 4, 5};
 
     public interface Callback {
@@ -249,37 +249,8 @@ public final class BluetoothWheelchairClient {
             closeQuietly(uuidSocket);
         }
 
-        if (!allowChannelProbe) {
-            throw lastException;
-        }
-
-        Method method;
-        try {
-            method = device.getClass().getMethod("createRfcommSocket", int.class);
-        } catch (NoSuchMethodException exception) {
-            method = null;      // hidden-API enforcement on newer Android
-        }
-        if (method == null) {
-            throw lastException;
-        }
-
-        for (int channel : DIRECT_RFCOMM_CHANNELS) {
-            BluetoothSocket directChannelSocket = null;
-            try {
-                directChannelSocket = (BluetoothSocket) method.invoke(device, channel);
-                directChannelSocket.connect();
-                return directChannelSocket;
-            } catch (IllegalAccessException | InvocationTargetException exception) {
-                IOException wrapped = new IOException("RFCOMM direct channel connection failed.", exception);
-                wrapped.addSuppressed(lastException);
-                closeQuietly(directChannelSocket);
-                throw wrapped;
-            } catch (IOException exception) {
-                exception.addSuppressed(lastException);
-                lastException = exception;
-                closeQuietly(directChannelSocket);
-            }
-        }
+        // PID has its own RFCOMM service UUID. Never probe raw channel numbers:
+        // the original team bridge and the NUC hands-free profiles may be running.
         throw lastException;
     }
 
