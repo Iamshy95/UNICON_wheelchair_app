@@ -7,60 +7,120 @@
 
 # UNICON FF–PID 휠체어 Android 앱
 
-한양대학교 UNICON Lab의 **ROS1 Noetic FF–PID–Safety 기반 전동휠체어**를 스마트폰에서 운용하는 전용 Android 앱입니다. 원본 팀 운영 앱은 별도 저장소에 남아 있으므로, 이 저장소는 FF–PID용 코드만 유지합니다.
+한양대학교 UNICON Lab의 **ROS1 Noetic FF–PID / Safety 기반 전동휠체어**를 운용하는 전용 Android 앱과 NUC Bluetooth 브릿지입니다. 이 저장소는 개인 FF–PID용으로 정리했으며 기존 팀 앱과 팀 Bluetooth 브릿지는 별도로 유지합니다.
 
-## 확정된 화면
+## 현재 확정한 지도 구성: 2안
 
-**관리자:** Bluetooth 연결 버튼 및 연결 상태, READY 시작·종료, READY 진행상태 및 LiDAR·IMU·FAST-LIO·GICP·인지·휠·UART 모니터링.
+**별도 2D 배경지도는 당장 만들지 않습니다.** 탑승자 화면에는 선택한 경로 선, 출발·도착 지점, 실시간 휠체어 위치와 방향 화살표를 표시합니다.
 
-**탑승자:** Bluetooth 연결 상태, A·D4·D5 간 6개 경로 선택, 주행 시작·종료, 출발 거부 시 위치·방향 조정 안내, 실제 주행 중 CLEAR/SLOW/STOP와 이유, **배경 지도 없이** 선택 경로 선과 출발·도착 지점·실시간 위치/방향.
+- 경로: NUC가 실제 주행에 사용하는 6개 JSON 경로 중 선택한 경로를 Bluetooth로 받습니다. 전송 지점을 줄이더라도 실제 FF–PID 주행 경로는 변경되지 않습니다.
+- 위치/방향: NUC ROS 측위 데이터에서 갱신하며, 오래되거나 끊긴 위치를 실시간으로 표시하지 않습니다.
+- LiDAR PCD → 2D PNG 변환, 일반 지도 배경, 드라이버블 마스크 표시: **현재 범위에서 제외**. 필요하면 추후 추가합니다.
+- Bluetooth에 연결하지 않은 에뮬레이터에서는 경로가 실제로 수신되지 않아 ‘경로 데이터 대기 중’이 정상입니다.
 
-Bluetooth 기기 선택 화면, 연결 해제 버튼, 앱 비상정지 버튼, 로그인, 카메라, 프리셋, 장애물 별도 뷰는 사용하지 않습니다. 실제 긴급 정지는 물리적 조이스틱 수단을 유지해야 합니다. 앱의 주행 종료는 `pid_stop.sh`입니다.
+## 화면 기능
 
-## 코드 구성
+| 관리자용 | 탑승자용 |
+| --- | --- |
+| Bluetooth **연결 버튼** 및 연결 상태 | Bluetooth 연결 상태 |
+| READY 시작 | A / D4 / D5 간 **6개 경로 선택** |
+| READY 종료 (확인창) | 주행 시작 / 주행 종료 |
+| READY 진행 상태 및 센서·FAST-LIO·GICP·인지·휠체어·UART 진단 | 출발 위치·방향 조정 안내 및 실패 사유 |
+| 작업 로그·실패 이유 | Safety CLEAR / SLOW / STOP 및 이유 |
+| | 경로 선, 출발/도착, 실시간 위치·방향 |
 
-- `app/src/main/java/com/example/jetsonbtmonitor/PidOperatorActivity.java`: **관리자/탑승자 전용 화면** 및 FF–PID 메시지 연동.
-- `app/src/main/java/com/example/jetsonbtmonitor/PidRouteMapView.java`: 배경 지도 없이 ROS `map` 좌표계의 경로·현재 위치/방향 그리기.
-- `app/src/main/java/com/example/jetsonbtmonitor/BluetoothWheelchairClient.java`: Android Bluetooth Classic RFCOMM 클라이언트·자동 재연결.
-- `nuc/pid_bt_bridge.py`: 별도 UUID/RFCOMM 채널 7의 **FF–PID 전용 BlueZ/ROS1 브릿지**.
-- `nuc/README.md`: 메시지 형식 및 NUC에서 수동 시험하는 방법.
-- `app/src/main/AndroidManifest.xml`: 관리자/탑승자 화면을 시작 화면으로 지정.
+Bluetooth 기기 선택·연결 해제 버튼, 앱 비상정지 버튼, 카메라, 로그인, Wi-Fi 기능, 기존 프리셋은 사용하지 않습니다.
 
-## 실행 구조
+- **READY 시작/종료:** NUC의 `pid_ready.sh start|stop`를 사용합니다.
+- **주행 시작:** `pid_drive.sh <경로>`에서 START를 누른 시점에 경로까지의 거리 1.0m / 방향 30° 사전 검사를 실시합니다. 서비스 ACK만으로 성공으로 표시하지 않고 실제 ROS RUNNING 상태 확인을 별도로 처리합니다.
+- **주행 종료:** `pid_stop.sh`로 정지하며 READY는 유지합니다.
+- **Safety STOP:** 장애물 등으로 일시 정지된 상태이며, 앱의 ‘주행 종료’와는 다릅니다.
+- **긴급 정지:** 앱 버튼 대신 기존 물리 조이스틱 측 정지 수단을 사용합니다. Bluetooth 단절 시 앱으로 정지를 요청할 수 없으므로 통신 장애를 안전 상태로 오인하지 않아야 합니다.
+
+## 구성
 
 ```text
-Android 앱 (Bluetooth UUID 9a1f17cc-18d2-45f0-b6e7-1b0e257a902e)
-             │ Bluetooth SPP (RFCOMM)
+스마트폰 Android 앱
+  PidOperatorActivity + PidRouteMapView
+              │
+              │ Bluetooth Classic RFCOMM
+              │ UUID: 9a1f17cc-18d2-45f0-b6e7-1b0e257a902e
+              ▼
 NUC: nuc/pid_bt_bridge.py
-             │ 작업 실행 / ROS 상태 구독
-NUC: pid_ready.sh · pid_drive.sh · pid_stop.sh
-             │
-        기존 FF–PID / Safety ROS1 노드
+     ├─ pid_ready.sh
+     ├─ pid_drive.sh / pid_stop.sh
+     ├─ 선택 경로 JSON
+     └─ ROS 위치·Safety·READY 텔레메트리
+              ▼
+      기존 ROS1 FF–PID / Safety
 ```
 
-기존 팀 `ros1_bluetooth_bridge.py`는 **건드리지 않으며** 별도 UUID·채널을 이용합니다. 브릿지는 스스로 `/cmd_vel`을 발행하지 않습니다. DRIVE 성공은 출발 서비스 승인 ACK가 아니라 실제 ROS `RUNNING` 상태로 확인합니다.
+기존 팀의 `ros1_bluetooth_bridge.py`는 **변경하거나 종료하지 않습니다.** 개인 브릿지는 전용 UUID/채널(기본 7)을 사용하며 `/cmd_vel`을 직접 발행하지 않습니다.
 
-### Android Studio
+### 경로 디렉터리 (NUC)
 
-Ubuntu PC의 기존 프로젝트에서 최신 코드를 내려받습니다.
+개인 PID GitHub의 `waypoints/`는 파일 보관 위치이지만, 실제 NUC의 FF–PID 제어기와 사전검사는 다음 폴더를 참조합니다.
+
+```text
+source-linux/routes/route2_manual_20261031/
+  A_to_D4_waypoints.json
+  A_to_D5_waypoints.json
+  D4_to_A_waypoints.json
+  D4_to_D5_waypoints.json
+  D5_to_A_waypoints.json
+  D5_to_D4_waypoints.json
+```
+
+브릿지에서 `--pid-scripts`가 `<REPO_ROOT>/src/pid/scripts`라면 기본 `--routes-dir`도 `<REPO_ROOT>/routes/route2_manual_20261031`입니다. 이는 `scripts.parents[2]`로 계산되며, 실제 제어기와 **같은 경로 파일을 읽기 위해 설정**했습니다. 명령줄에서 `--routes-dir`를 지정하면 그 값이 우선하므로 동일한 폴더를 지정해야 합니다. 실제 NUC의 폴더 존재 여부는 배포 시 확인합니다.
+
+## 주요 코드
+
+| 경로 | 역할 |
+| --- | --- |
+| `app/src/main/java/com/example/jetsonbtmonitor/PidOperatorActivity.java` | 관리자/탑승자 화면, 버튼, 상태 표시 |
+| `app/src/main/java/com/example/jetsonbtmonitor/PidRouteMapView.java` | 배경 지도 없이 선택 경로와 위치·방향 표시 |
+| `app/src/main/java/com/example/jetsonbtmonitor/BluetoothWheelchairClient.java` | Bluetooth 연결 및 자동 재연결 |
+| `nuc/pid_bt_bridge.py` | ROS1 ↔ Bluetooth 메시지와 READY/DRIVE 명령 처리 |
+| [`nuc/README.md`](nuc/README.md) | NUC 브릿지 실행·명령·텔레메트리 상세 |
+
+## Android 빌드
+
+기존 프로젝트 폴더에서 최신 코드를 받습니다.
 
 ```bash
 cd ~/ws/wheelchair_ws/UNICON_wheelchair_app
 git pull origin main
 ```
 
-Android Studio에서 **Build > Make Project** 또는 Gradle `:app:assembleDebug`로 컴파일하고, 스마트폰에 설치해 화면과 Bluetooth 통신을 확인합니다. 블루투스 기기 목록을 앱 안에서 선택하지 않으므로, NUC는 **Android 설정에서 미리 페어링**해야 합니다. 이전 앱의 저장된 NUC Bluetooth 주소가 있으면 재사용하고, 없으면 페어링된 이름으로 단일 NUC 후보를 찾습니다.
+Android Studio에서 **Build > Make Project** 후 에뮬레이터 또는 USB 디버깅을 켠 스마트폰을 선택하여 **Run(▶)** 을 누릅니다.
 
-### NUC
+- **사용자가 확인한 것:** Android 에뮬레이터에서 앱이 실행됨. 연결되지 않은 상태에서는 명령 버튼이 동작하지 않거나 상태를 수신하지 못하는 것이 정상입니다.
+- **아직 확인하지 못한 것:** 실제 스마트폰↔NUC Bluetooth 연결, 경로 수신/지도 좌표 정합, READY/주행/Safety 동작.
+- 앱에서 기기 선택을 하지 않으므로 스마트폰 Bluetooth 설정에서 NUC를 먼저 페어링해야 합니다. 이전에 저장된 NUC 주소가 없으면 페어링된 기기명으로 단일 후보를 찾습니다.
 
-GitHub 파일은 자동으로 NUC에 설치되지 않습니다. `nuc/pid_bt_bridge.py`를 NUC에 배포하고 ROS Noetic·BlueZ 환경에서 실행해야 합니다. 자동 부팅은 추후 **별도 systemd 서비스 등록**이 필요합니다. 스크립트·루트 경로는 실제 NUC 환경에 맞춰 지정합니다.
+## 다음 작업 및 검증 체크리스트
 
-## 구현·검증 상태
+**새 2D 지도 제작은 필수가 아닙니다.** 실제 남은 주요 작업은 아래와 같습니다.
 
-- 앱 화면 구성 및 지도 렌더링 코드: **작성됨**, Android Studio 빌드 확인 전.
-- 개인 PID `main`의 1.0m/30° 출발 검사 JSON 및 RUNNING 판정 브릿지 처리: **작성됨**, 실제 기기 통합시험 전.
-- 탑승자 지도 영역: **2안 채택**. LiDAR·마스크·PNG 배경 없이 NUC에서 선택 경로 XY를 한 번 수신하고, ROS 측위로 위치/방향 화살표만 갱신. Bluetooth 미연결 시 경로 수신 대기 상태 표시.
-- 기존 운영 코드 정리: 불필요한 이전 Wi-Fi/Jetson Java, 레이아웃, 리소스, ROS2 예제는 제거했으며 Git 이력과 원본 저장소에 남습니다.
-- NUC 배포·systemd 자동실행·실기 안전 검증: **미완료**.
+- [ ] **NUC 브릿지 배포:** 최신 `nuc/pid_bt_bridge.py` 설치, ROS1/BlueZ 의존성과 스크립트 경로 확인.
+- [ ] **Bluetooth 충돌 없는 연결:** 기존 팀 브릿지는 그대로 둔 채 새 UUID/RFCOMM 채널에서 Android 앱과 통신 확인.
+- [ ] **READY 확인:** 시작·종료, 구성요소 상태와 실패 사유, 실제 센서·GICP·인지 데이터 정상 수신 확인.
+- [ ] **경로·위치 확인:** 6개 경로 선택/전송과 실시간 위치·방향, ROS map 좌표계 정합 확인.
+- [ ] **안전 기능 우선 점검:** 출발 거부 시 위치 조정 안내, RUNNING 확인, `pid_stop.sh` 정차 확인, 통신 끊김 표시, 물리 조이스틱 정지 수단 확인.
+- [ ] **통제된 주행 테스트:** 안전 확보 후 START/STOP과 Safety CLEAR/SLOW/STOP 동작 검증.
+- [ ] **자동 실행 설정:** NUC 부팅 시 개인 Bluetooth 브릿지가 시작되도록 별도 systemd 서비스 설치(기존 팀 서비스와 충돌 방지).
+- [ ] **선택 작업:** 추후 필요하면 PCD를 2D PNG로 가공하여 지도 배경 추가.
 
-**중요:** 코드가 GitHub에 반영됐다는 것과 실제 휠체어에서 안전하게 동작함이 확인됐다는 것은 다릅니다.
+## 구현 및 검증 상태 (2026-11-09)
+
+| 항목 | 상태 |
+| --- | --- |
+| 관리자/탑승자 UI | 코드 작성 완료, 에뮬레이터 실행 사용자 확인 |
+| 경로 선 + 위치·방향 표시 | 코드 작성 완료, NUC 데이터 연동 미검증 |
+| 출발 조건·READY·Safety 연동 | 코드 작성, 실기 미검증 |
+| FF–PID와 브릿지의 경로 폴더 일치 | 기본 경로 코드 수정 완료, NUC 실제 배포 미확인 |
+| NUC 전용 Bluetooth 서비스 설치 | 미완료/미확인 |
+| systemd 자동 실행 | 미설정 |
+| 2D 배경 지도 | 현재 만들지 않기로 결정 |
+
+**주의:** GitHub에 코드가 반영되거나 에뮬레이터에서 실행된 사실은 실제 휠체어의 제어·정지·Safety 정상 동작을 보증하지 않습니다.
