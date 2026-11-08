@@ -66,7 +66,7 @@ NUC OS에 `python3-dbus`, `python3-gi`와 BlueZ가 설치되어 있어야 합니
 - `/wheel_status`
 - `/fast_lio_icp/localization_diagnostics`
 
-**현재 단계:** 브릿지에서 병합된 출발 검사·주행 이벤트를 수신하도록 보완했습니다. Android 두 화면, READY 상세 상태·시스템 진단의 최종 검증, 실기 NUC 동작 검증 및 systemd 등록은 아직 완료되지 않았습니다.
+**현재 단계 (2026-11-09):** Android 관리자/탑승자 두 화면은 작성되었으며 사용자가 에뮬레이터 실행을 확인했습니다. 탑승자 화면은 **2안(배경 지도 없이 경로 선 + 현재 위치/방향)** 으로 확정했습니다. 브릿지는 실제 NUC 제어기와 같은 `source-linux/routes/route2_manual_20261031/` 경로 JSON을 읽도록 기본 설정했습니다. **NUC 배포, 실제 Bluetooth 연결, READY·경로·Safety 텔레메트리, 주행 종료, 시스템 진단의 실기 통합 검증 및 systemd 등록은 아직 완료되지 않았습니다.**
 
 ## 원본 코드
 
