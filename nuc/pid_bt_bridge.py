@@ -737,7 +737,7 @@ def main():
     if not 1 <= args.channel <= 30:
         ap.error("RFCOMM channel must be in 1..30")
     scripts = Path(args.pid_scripts).expanduser().resolve()
-    routes = args.routes_dir or str(scripts.parents[2] / "routes" / "route2_manual_20261031")
+    routes = args.routes_dir or str(scripts.parents[2] / "waypoints" / "route2_manual_20261031")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [pid_bt] %(message)s")
     bridge = Bridge(scripts, routes)
     threading.Thread(target=bridge.attach_ros_when_available, daemon=True).start()
