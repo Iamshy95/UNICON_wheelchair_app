@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import os
+import signal
 from pathlib import Path
 from collections import deque
 import socket
@@ -101,8 +102,9 @@ class Bridge:
                 self.last_drive_event = obj
                 self._emit(obj)
                 if obj.get("status") == "STARTED":
-                    self.drive_accepted = True
-                    self.drive_phase = "START_REQUEST_ACCEPTED"
+                    if self.drive_phase != "STOPPING":
+                        self.drive_accepted = True
+                        self.drive_phase = "START_REQUEST_ACCEPTED"
                 elif obj.get("status") == "REJECTED":
                     self._reject_drive(obj.get("reason", "SCRIPT_CHECK_FAILED"),
                                        obj.get("message", "주행 시작이 거부되었습니다."))
@@ -197,11 +199,12 @@ class Bridge:
                     if code == 0:
                         self.ready_state = "STOPPED"
                 elif name == "drive":
-                    if not self.drive_confirmed:
-                        self._reject_drive("SCRIPT_FAILED",
-                                           (job or {}).get("detail", "DRIVE script exited"))
-                    elif self.drive_phase != "STOPPING":
-                        self.drive_phase = "FINISHED"
+                    if self.drive_phase not in ("STOPPING", "STOPPED"):
+                        if not self.drive_confirmed:
+                            self._reject_drive("SCRIPT_FAILED",
+                                               (job or {}).get("detail", "DRIVE script exited"))
+                        else:
+                            self.drive_phase = "FINISHED"
                     self.active_route = None
                 elif name == "drive_stop":
                     if code == 0:
@@ -229,6 +232,21 @@ class Bridge:
         p = self.jobs.get(name)
         return p is not None and p.poll() is None
 
+    def _cancel_drive_launch(self):
+        """Cancel a still-starting DRIVE shell before asking pid_stop.sh to stop."""
+        with self.lock:
+            proc = self.jobs.get("drive")
+            if proc is None or proc.poll() is not None:
+                return
+            if self.drive_confirmed:
+                return  # Established DRIVE is stopped via pid_stop.sh.
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                LOG.exception("Unable to interrupt DRIVE preflight process")
+
     def _shutdown_ready(self):
         """Verify stopped MANUAL wheels before READY stack teardown."""
         try:
@@ -236,6 +254,9 @@ class Bridge:
                 active = (self._running("drive") or self._running("drive_stop")
                           or self.drive_phase in ("RUNNING", "START_REQUEST_ACCEPTED", "STOPPING"))
             if active:
+                with self.lock:
+                    self.drive_phase = "STOPPING"
+                self._cancel_drive_launch()
                 command = ["/bin/bash", self._script("pid_stop.sh")]
                 stopped = subprocess.run(command, stdin=subprocess.DEVNULL,
                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -275,6 +296,8 @@ class Bridge:
 
     def handle(self, payload):
         """Return an ACK and optional route frame. No arbitrary shell commands."""
+        if not isinstance(payload, dict):
+            return {"type": "ack", "ok": False, "detail": "JSON object required"}, None
         command = payload.get("command") or payload.get("action")
         response = {"type": "ack", "command": command, "ok": False, "detail": ""}
         extra = None
@@ -286,8 +309,8 @@ class Bridge:
                 if name not in ROUTES:
                     raise ValueError("Invalid route")
                 with self.lock:
-                    if self._running("drive"):
-                        raise RuntimeError("Cannot change route while DRIVE is running")
+                    if self._running("drive") or self.drive_phase in ("RUNNING", "CHECKING", "START_REQUEST_ACCEPTED", "STOPPING"):
+                        raise RuntimeError("Cannot change route while DRIVE is active")
                     self.selected_route = name
                 extra = self._route_frame()
                 response.update(ok=True, detail="route selected: " + name)
@@ -329,7 +352,8 @@ class Bridge:
                         raise RuntimeError("READY shutdown in progress")
                     if self.estop_latched:
                         raise RuntimeError("E-STOP latched; release separately")
-                    if self._running("drive") or self._running("drive_stop"):
+                    if (self._running("drive") or self._running("drive_stop")
+                            or self.drive_phase in ("CHECKING", "START_REQUEST_ACCEPTED", "RUNNING", "STOPPING")):
                         raise RuntimeError("DRIVE already running or stopping")
                     if self._running("ready_start"):
                         raise RuntimeError("READY still starting")
@@ -358,6 +382,11 @@ class Bridge:
                     if command == "estop":
                         self.estop_latched = True
                     self.drive_phase = "STOPPING"
+                    if self._running("drive_stop"):
+                        raise RuntimeError("Stop already in progress")
+                # Abort any still-running preflight/START shell first, to avoid
+                # it switching MANUAL back to AUTO after the stop check finishes.
+                self._cancel_drive_launch()
                 # pid_stop.sh requests MANUAL, controller pause and verifies wheels.
                 # Run immediately without waiting for the DRIVE watch process.
                 response.update(self._run_job("drive_stop", ["pid_stop.sh"]))
