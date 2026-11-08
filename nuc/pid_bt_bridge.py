@@ -6,7 +6,6 @@ Run alongside the team's *different* SPP profile (different UUID and channel).
 Requires python3-dbus, python3-gi, BlueZ and ROS Noetic on the NUC.
 """
 import argparse
-import base64
 import json
 import logging
 import math
@@ -18,7 +17,6 @@ import socket
 import subprocess
 import threading
 import time
-import zlib
 
 ROUTES = ("A_to_D4", "A_to_D5", "D4_to_A", "D4_to_D5", "D5_to_A", "D5_to_D4")
 PID_SPP_UUID = "9a1f17cc-18d2-45f0-b6e7-1b0e257a902e"
@@ -296,60 +294,6 @@ class Bridge:
                 "points": [{"x": p["x"], "y": p["y"]}
                            for p in pts[::stride]]}
 
-    def _map_frame(self):
-        """Read the original PGM drivable mask; downsample for Bluetooth display."""
-        path = self.routes_dir / "common_drivable_mask.pgm"
-        yaml_path = self.routes_dir / "common_drivable_mask.yaml"
-        if not path.is_file() or not yaml_path.is_file():
-            raise RuntimeError("Map mask files missing in " + str(self.routes_dir))
-        config = {}
-        for line in yaml_path.read_text(encoding="utf-8").splitlines():
-            if ":" in line:
-                k, v = line.split(":", 1)
-                config[k.strip()] = v.strip()
-        import ast
-        origin = ast.literal_eval(config["origin"])
-        resolution = float(config["resolution"])
-        with path.open("rb") as stream:
-            def token():
-                while True:
-                    ch = stream.read(1)
-                    if not ch:
-                        raise ValueError("PGM header truncated")
-                    if ch == b"#":
-                        stream.readline()
-                        continue
-                    if not ch.isspace():
-                        break
-                buf = bytearray(ch)
-                while True:
-                    ch = stream.read(1)
-                    if not ch or ch.isspace():
-                        return bytes(buf)
-                    buf.extend(ch)
-            if token() != b"P5":
-                raise RuntimeError("Map PGM must be P5 grayscale")
-            width, height, maximum = int(token()), int(token()), int(token())
-            if maximum != 255 or width * height > 16000000:
-                raise ValueError("Unsupported map size/format")
-            pixels = stream.read(width * height)
-            if len(pixels) != width * height:
-                raise ValueError("PGM pixel buffer truncated")
-        factor = max(1, math.ceil(max(width, height) / 450))
-        small_width = math.ceil(width / factor)
-        small_height = math.ceil(height / factor)
-        reduced = bytearray(small_width * small_height)
-        for row in range(small_height):
-            src = (row * factor) * width
-            dest = row * small_width
-            for col in range(small_width):
-                reduced[dest + col] = pixels[src + col * factor]
-        return {"type": "map", "frame": "map", "encoding": "zlib-gray8",
-                "width": small_width, "height": small_height,
-                "origin_x": float(origin[0]), "origin_y": float(origin[1]),
-                "resolution": resolution * factor,
-                "pixels": base64.b64encode(zlib.compress(bytes(reduced), 6)).decode("ascii")}
-
     def handle(self, payload):
         """Return an ACK and optional route frame. No arbitrary shell commands."""
         if not isinstance(payload, dict):
@@ -373,9 +317,6 @@ class Bridge:
             elif command == "route":
                 extra = self._route_frame()
                 response.update(ok=True, detail="route loaded")
-            elif command == "map":
-                extra = self._map_frame()
-                response.update(ok=True, detail="map loaded")
             elif command in ("ready_start", "stack_start"):
                 with self.lock:
                     if self._running("ready_start"):
