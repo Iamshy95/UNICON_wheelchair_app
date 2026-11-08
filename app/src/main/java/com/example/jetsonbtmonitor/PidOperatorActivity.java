@@ -85,6 +85,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
             if (connected && System.currentTimeMillis() - lastFrameMs > 3500) {
                 showBluetooth("통신 지연 · 상태 확인 불가", AMBER);
                 showUnknownSafety("상태 정보를 수신하지 못했습니다.");
+                mapView.setPose(null);
                 driveStart.setEnabled(false);
             }
             ui.postDelayed(this, 1000);
@@ -107,7 +108,6 @@ public final class PidOperatorActivity extends AppCompatActivity {
                     // Always re-check NUC state and route after a reconnect.
                     send("status", null);
                     send("route", null);
-                    send("map", null);
                 });
             }
             @Override public void onDisconnected() {
@@ -118,6 +118,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
                     driveStart.setEnabled(false);
                     readyStart.setEnabled(false);
                     showUnknownSafety("Bluetooth 연결이 끊어졌습니다. 조이스틱으로 안전을 확보하세요.");
+                    mapView.setPose(null);
                 });
             }
             @Override public void onReconnecting(int attempt, long delayMs) {
@@ -139,7 +140,6 @@ public final class PidOperatorActivity extends AppCompatActivity {
             showBluetooth("연결됨", GREEN);
             send("status", null);
             send("route", null);
-            send("map", null);
         }
         ui.postDelayed(freshnessTick, 1000);
     }
@@ -303,13 +303,13 @@ public final class PidOperatorActivity extends AppCompatActivity {
         });
 
         LinearLayout mapCard = card(riderScreen);
-        add(mapCard, text("지도 · 선택 경로 · 현재 위치", 17, INK, true), 0);
+        add(mapCard, text("경로 · 현재 위치 및 방향", 17, INK, true), 0);
         mapView = new PidRouteMapView(this);
         mapView.setBackground(background(BG, Color.rgb(220, 230, 240)));
         LinearLayout.LayoutParams mapLp = new LinearLayout.LayoutParams(-1, dp(330));
         mapLp.topMargin = dp(12);
         mapCard.addView(mapView, mapLp);
-        add(mapCard, text("위치 화살표는 ROS map 좌표계 기준입니다.", 12, MUTED, false), 8);
+        add(mapCard, text("경로와 위치는 ROS map 좌표계 기준입니다. 배경 지도는 사용하지 않습니다.", 12, MUTED, false), 8);
 
         LinearLayout controls = card(riderScreen);
         add(controls, text("주행 제어", 18, INK, true), 0);
@@ -453,8 +453,6 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 if (selectedRoute.equals(f.optString("route"))) {
                     mapView.setRoute(selectedRoute, f.optJSONArray("points"));
                 }
-            } else if ("map".equals(type)) {
-                mapView.setMap(f);
             } else if ("telemetry".equals(type)) {
                 renderTelemetry(f);
             } else if ("drive_preflight".equals(type)) {
