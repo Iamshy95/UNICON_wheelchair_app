@@ -406,7 +406,8 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 for (BluetoothDevice d : paired) {
                     String n = d.getName();
                     if (n != null && (n.toLowerCase().contains("nuc") ||
-                            n.toLowerCase().contains("wheelchair"))) nucs.add(d);
+                            n.toLowerCase().contains("wheelchair") ||
+                            n.equalsIgnoreCase("mprp3"))) nucs.add(d);
                 }
                 if (nucs.size() == 1) target = nucs.get(0);
             }
