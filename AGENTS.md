@@ -1,69 +1,50 @@
-# AGENTS.md
+# AGENTS.md — UNICON FF–PID Android + NUC Bluetooth
 
-## Project Purpose
+## Scope (current project)
 
-This repository contains an Android + Jetson monitoring system for an edge mobility platform. The Android app communicates with a Jetson AGX Orin over Wi-Fi, polls a Jetson-hosted HTTP API for ROS2-derived telemetry, displays speed, battery, mode, presets, and camera stream status, and sends mode, step-level, and stop commands back to ROS2 topics.
+This repository is the **ROS1 Noetic FF–PID/Safety wheelchair operator app**, not the old Jetson/ROS2/Wi-Fi monitoring project. Its parts are:
 
-Treat this as an AI / robotics engineering portfolio project. Future work should make the system understandable, reproducible, and credible for recruiters, AI engineers, and robotics researchers.
+- Android Java: `PidOperatorActivity.java`, `PidRouteMapView.java`, `BluetoothWheelchairClient.java`.
+- NUC ROS1/BlueZ bridge: `nuc/pid_bt_bridge.py`.
+- Detailed bridge contract and instructions: `nuc/README.md`.
+- Source attribution/licensing: `LICENSE`, `NOTICE.md`, root `README.md`.
 
-## Coding Style Rules
+The original team's app and independent NUC `ros1_bluetooth_bridge.py` must **not** be modified or interrupted. The dedicated app/bridge UUID is `9a1f17cc-18d2-45f0-b6e7-1b0e257a902e` (default RFCOMM channel 7; check the actual NUC before deployment).
 
-- Preserve existing behavior unless the user explicitly asks for a refactor.
-- Keep Android code in the existing Java + XML style.
-- Keep Jetson scripts in plain Python standard-library style unless a dependency is already required, such as ROS2 or OpenCV.
-- Keep network addresses, ports, ROS topic names, and JSON payload schemas explicit and easy to audit.
-- If changing API payloads, update Android client code, Jetson bridge code, tests, and README examples together.
-- Do not introduce hidden background behavior or undocumented protocol changes.
+## User-approved product decisions
 
-## Documentation Rules
+- Two screens (tabs): **관리자** (one NUC Bluetooth connect button; READY start/stop, health, errors) and **탑승자** (six A/D4/D5 routes; drive start/end; preflight guidance; live Safety status).
+- No login, in-app device picker, disconnect button, camera, Wi-Fi controls, or app emergency-stop button.
+- Hardware/physical joystick stop remains the emergency response. `pid_stop.sh` is an ordinary verified drive-end request, **not** a certified emergency-stop device.
+- **Map implementation is staged**: current interim view shows the selected path, start/goal and current heading/location without a background image; a properly aligned **PCD-derived 2D map** is a **required future final milestone**, not permanently cancelled. Do not use `common_drivable_mask.pgm` as a passenger map illustration.
+- Routes are fetched from the NUC during Bluetooth operation rather than bundled into the APK. Real-time pose/Safety are also received from the NUC.
 
-- Write documentation for a fresh clone, not for a local machine.
-- Separate Android setup, Jetson setup, ROS2 topic contract, camera streaming, and validation.
-- Document required external dependencies: Android Studio, Android SDK, JDK, ROS2 Humble, Python 3, OpenCV, NetworkManager, and camera hardware where relevant.
-- Mark hardware-dependent steps clearly.
-- Use placeholders such as `/home/<user>/<repo>/jetson` instead of hard-coded personal systemd paths.
+## Ground truth & paths
 
-## README Writing Rules
+- Separate PID project: https://github.com/Iamshy95/UNICON_wheelchair_PID
+- Actual NUC PID scripts are deployed within `<REPO_ROOT>/src/pid/scripts/`.
+- Actual FF–PID route assets are resolved from `<REPO_ROOT>/routes/route2_manual_20261031/`. The separate PID GitHub project's `waypoints/` is a source/archive location; it is **not automatically** the NUC route directory.
+- Bridge accepts `--pid-scripts` and `--routes-dir`; when `--routes-dir` is omitted it resolves from the PID scripts path. Ensure the UI and FF–PID read the same real route JSON.
+- Forward exactly the six allowed route IDs; no arbitrary shell commands.
+- FF–PID and the preflight script transform the raw `/fast_lio_icp/pose` into a **chair-centre** reference using `body_frame.py` and route-specific metadata. The bridge's raw GICP pose before drive confirmation is not necessarily chair-centred. Do not assert that all pose sources are equivalent.
+- The bridge must never directly publish `/cmd_vel`, alter FF–PID or Safety policy, expose occupied-driving `--test-clear`, or change existing ROS bridge services.
 
-- Start with a concise technical summary of what runs on Android, what runs on Jetson, and what flows over the network.
-- Include an architecture section with a text diagram or image.
-- Include exact validation commands:
-  - `./gradlew :app:assembleDebug`
-  - `./gradlew :app:testDebugUnitTest`
-  - `./gradlew :app:lintDebug`
-  - `source /opt/ros/humble/setup.bash && python3 jetson/ros2_wifi_bridge.py`
-  - `python3 jetson/camera_mjpeg_server.py`
-- Include screenshots, demo GIFs, ROS topic screenshots, API example responses, or mark them `TBD`.
-- Avoid claiming real robot deployment, safety validation, or production readiness without evidence.
+## Safety & protocol
 
-## Testing / Validation Rules
+- One newline-delimited JSON object per Bluetooth message. Commands include `status`, `route`, `route_select`, `ready_start`, `ready_stop`, `drive_start`, `drive_stop`.
+- Treat `ack.ok=true` as command acceptance, **not** confirmed READY, movement, or physical stop.
+- Report drive success only after the same route's actual fresh `/ff_pid/status: RUNNING` is confirmed, not just when START service accepts it.
+- Route/pose data must use compatible ROS `map` frames and matching chair-centre references. Do not fabricate localization, route geometry, Safety data or readiness when offline.
+- Safety `STOP` is a temporary controller hold and differs from ending a drive. Missing, stale, or disconnected telemetry must be reported as unknown, not healthy. Never present a stale last-known pose as live.
+- Preserve operator-initiated drive STOP semantics even when telemetry becomes stale. Any changes to disconnection or retry behavior require reviewing socket/thread ownership and whether an old reader can close a newer connection.
+- If a requested action is unsafe or cannot be verified on an actual device, mark the unverified state and make no safety claims.
 
-- For Android changes, run:
-  - `./gradlew :app:testDebugUnitTest`
-  - `./gradlew :app:assembleDebug`
-  - `./gradlew :app:lintDebug`
-- On Windows, if `JAVA_HOME` is not set but Android Studio is installed, use the Android Studio JBR.
-- For Jetson Python scripts, validate syntax when Python is available:
-  - `python3 -m py_compile jetson/ros2_wifi_bridge.py jetson/camera_mjpeg_server.py jetson/ros2_bt_bridge.py`
-- For ROS2 behavior, validate with documented `ros2 topic pub` and `ros2 topic echo` commands.
-- If hardware, ROS2, Python, or camera dependencies are unavailable, state exactly what could not be validated.
+## Development practice
 
-## What Codex Must Not Fabricate
-
-- Do not invent latency, FPS, reliability, field-test outcomes, robot behavior, or safety claims.
-- Do not claim the robot or wheelchair works unless evidence is committed or validation was actually run.
-- Do not invent screenshots, diagrams, datasets, logs, or demo videos.
-- Do not describe Bluetooth as the primary current workflow when the documented app flow uses Wi-Fi HTTP.
-
-## Missing Results / Dataset Handling
-
-- Use `TBD` or `To be added` for missing screenshots, demo videos, logs, diagrams, and quantitative results.
-- If generated outputs are useful for docs, place curated assets under `docs/`; keep build outputs ignored.
-- Treat `local.properties`, generated APKs, Gradle build outputs, keystores, and machine-specific service paths as local-only.
-
-## Portfolio-Quality Explanation Rules
-
-- Explain the pipeline as: Android UI -> HTTP API -> Jetson bridge -> ROS2 topics -> telemetry/commands.
-- Emphasize concrete engineering choices: endpoints, polling interval, ROS2 topics, command payloads, local JSON user store, MJPEG stream, and systemd services.
-- Keep limitations visible and actionable.
-
+- Keep Android code Java/AndroidX and the present programmatic UI unless the user explicitly requests a redesign.
+- Keep the NUC bridge Python 3/ROS1/BlueZ; preserve message schema in both sender and receiver.
+- For source edits, review the corresponding scripts and JSON payloads across Android, NUC, and PID; add tests where practical.
+- Distinguish **code committed**, **Android Studio build**, **emulator run**, **real Android ↔ NUC Bluetooth test**, and **occupied-driving safety tests**.
+- Suggested checks (run only in an available environment): `./gradlew :app:assembleDebug`, `./gradlew :app:testDebugUnitTest`, `python3 -m py_compile nuc/pid_bt_bridge.py`. Never claim that a command ran unless it actually did.
+- Do not overwrite the original team's bridge or deploy code to an actual NUC without verifying existing processes, real paths and hardware conditions.
+- Document actual changes in `README.md` and `nuc/README.md`. Do not carry forward obsolete Jetson/ROS2/Wi-Fi/camera implementation descriptions.
