@@ -147,10 +147,13 @@ public final class PidRouteMapView extends View {
         canvas.drawPath(routePath, paint);
         paint.setStyle(Paint.Style.FILL);
 
-        // Start and destination stay visible even before localization is ready.
-        marker(canvas, ox + xs[0] * scale, oy - ys[0] * scale, GREEN, "출발", w, h);
+        // Place names are for display only; route IDs sent to the NUC are unchanged.
+        String[] endpoints = routeName.split("_to_", -1);
+        String startLabel = endpoints.length == 2 ? placeName(endpoints[0]) : "출발";
+        String goalLabel = endpoints.length == 2 ? placeName(endpoints[1]) : "도착";
+        marker(canvas, ox + xs[0] * scale, oy - ys[0] * scale, GREEN, startLabel, w, h);
         marker(canvas, ox + xs[xs.length - 1] * scale,
-                oy - ys[ys.length - 1] * scale, BLUE, "도착", w, h);
+                oy - ys[ys.length - 1] * scale, BLUE, goalLabel, w, h);
 
         if (hasPose) {
             float px = ox + poseX * scale, py = oy - poseY * scale;
