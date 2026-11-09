@@ -582,7 +582,9 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 safetyState.setText("Safety: " + state);
                 safetyState.setTextColor("CLEAR".equals(state) ? GREEN :
                         "SLOW".equals(state) ? AMBER : "STOP".equals(state) ? RED : MUTED);
-                safetyReason.setText(safety.optString("reason", "이유 정보 없음"));
+                String reason = safety.optString("reason", "이유 정보 없음");
+                safetyReason.setText("GOAL_APPROACH".equals(reason)
+                        ? "목적지 접근 중" : reason);
             }
         } else if (!driveConfirmed && !"CHECKING".equals(phase) &&
                 !"START_REQUEST_ACCEPTED".equals(phase) && !"REJECTED".equals(phase)) {
