@@ -11,6 +11,7 @@ import logging
 import math
 import os
 import signal
+import sys
 from pathlib import Path
 from collections import deque
 import socket
@@ -50,6 +51,8 @@ class Bridge:
         self.drive_rejection_sent = False
         self.ready_stopping = False
         self.stop_alarm = None
+        self._pose_transform_cache = {}
+        self._pose_transform_errors = set()
 
     def _emit(self, event):
         """Remember structured events for every active Bluetooth session."""
@@ -277,6 +280,39 @@ class Bridge:
                 self.ready_stopping = False
 
 
+    def _chair_centre_transform(self, route_name):
+        """Use the same route-specific chair-centre correction as PID preflight.
+
+        GICP publishes a map-frame pose of the FAST-LIO body origin, not the
+        chair centre. This transform is evaluated in the *body* frame, so the
+        mounting offset rotates with yaw. Never fall back to raw GICP as if
+        it were chair-centred when route metadata/imports are missing.
+        """
+        with self.lock:
+            if route_name in self._pose_transform_cache:
+                return self._pose_transform_cache[route_name]
+        path = self.routes_dir / (route_name + "_waypoints.json")
+        with path.open(encoding="utf-8") as stream:
+            metadata = json.load(stream)
+        if (metadata.get("frame") != "map"
+                or metadata.get("route_key") != route_name
+                or metadata.get("reference_point") != "chair_centre"):
+            raise ValueError("Invalid chair-centred map route: " + str(path))
+        profile = metadata["body_frame_profile"]
+        localization_scripts = self.scripts.parents[1] / "static_livox_localization" / "scripts"
+        if not (localization_scripts / "body_frame.py").is_file():
+            raise FileNotFoundError("Missing body_frame.py: " + str(localization_scripts))
+        scripts_path = str(localization_scripts)
+        if scripts_path not in sys.path:
+            sys.path.insert(0, scripts_path)
+        from body_frame import pose_correction, reference_correction, route_chair_centre
+        # Both pid_drive.sh and pid_drive_check.py use the builtin IMU profile.
+        correction = pose_correction("builtin", str(profile)) @ reference_correction(
+            str(metadata["reference_point"]), route_chair_centre(metadata))
+        with self.lock:
+            self._pose_transform_cache[route_name] = correction
+        return correction
+
     def _route_frame(self):
         with self.lock:
             name = self.selected_route
@@ -311,6 +347,8 @@ class Bridge:
                 with self.lock:
                     if self._running("drive") or self.drive_phase in ("RUNNING", "CHECKING", "START_REQUEST_ACCEPTED", "STOPPING"):
                         raise RuntimeError("Cannot change route while DRIVE is active")
+                    if self.selected_route != name:
+                        self.latest.pop("pose", None)
                     self.selected_route = name
                 extra = self._route_frame()
                 response.update(ok=True, detail="route selected: " + name)
@@ -357,6 +395,8 @@ class Bridge:
                         raise RuntimeError("DRIVE already running or stopping")
                     if self._running("ready_start"):
                         raise RuntimeError("READY still starting")
+                    if self.selected_route != name:
+                        self.latest.pop("pose", None)
                     self.selected_route = name
                 # Check matching map route asset before attempting to move.
                 extra = self._route_frame()
@@ -417,12 +457,39 @@ class Bridge:
             LOG.warning("Invalid %s JSON", key)
 
     def _pose_cb(self, msg):
-        p, q = msg.pose.pose.position, msg.pose.pose.orientation
-        yaw = math.degrees(math.atan2(
-            2 * (q.w * q.z + q.x * q.y),
-            1 - 2 * (q.y * q.y + q.z * q.z)))
-        self._store("pose", {"x": p.x, "y": p.y, "yaw_deg": yaw,
-                             "source": "GICP", "frame": msg.header.frame_id})
+        """Publish chair-centre position even before FF-PID starts."""
+        if msg.header.frame_id not in ("map", "/map"):
+            return
+        with self.lock:
+            route_name = self.selected_route
+        try:
+            import tf.transformations as tft
+            p, q = msg.pose.pose.position, msg.pose.pose.orientation
+            raw_map = tft.quaternion_matrix([q.x, q.y, q.z, q.w])
+            raw_map[:3, 3] = (p.x, p.y, p.z)
+            corrected = raw_map @ self._chair_centre_transform(route_name)
+            x, y = float(corrected[0, 3]), float(corrected[1, 3])
+            _, _, yaw = tft.euler_from_matrix(corrected)
+            if not all(math.isfinite(v) for v in (x, y, yaw)):
+                raise ValueError("Non-finite chair-centre pose")
+        except Exception as exc:
+            # Do not display raw sensor pose with chair-centred route geometry.
+            with self.lock:
+                self.latest.pop("pose", None)
+                key = (route_name, type(exc).__name__, str(exc))
+                if key not in self._pose_transform_errors:
+                    self._pose_transform_errors.add(key)
+                    LOG.warning("Chair-centre pose unavailable for %s: %s", route_name, exc)
+            return
+        with self.lock:
+            # Route changes may race with this ROS callback.
+            if self.selected_route != route_name:
+                return
+            self.latest["pose"] = (time.monotonic(), {
+                "x": x, "y": y, "yaw_deg": math.degrees(yaw),
+                "source": "GICP_CHAIR_CENTRE", "frame": "map",
+                "reference_point": "chair_centre", "route": route_name,
+            })
 
     def _wheel_cb(self, msg):
         mode = int(msg.data[1]) if len(msg.data) > 1 else None
@@ -507,11 +574,9 @@ class Bridge:
             pose = fresh("pose", 1.5)
             wheel = fresh("wheel", 2.5)
             gicp = fresh("gicp", 5.0)
-            if drive and isinstance(drive.get("pose_used"), (tuple, list)) and len(drive["pose_used"]) == 3:
-                x, y, yaw = drive["pose_used"]
-                if all(isinstance(v, (int, float)) and math.isfinite(v) for v in (x, y, yaw)):
-                    pose = {"x": x, "y": y, "yaw_deg": math.degrees(yaw),
-                            "source": "FF_PID", "frame": "map"}
+            # Use one reference point during READY, DRIVE and after STOP.
+            # FF-PID pose_used is already chair-centred but includes its control-
+            # loop prediction; do not switch the display between two estimators.
             phase = self.drive_phase
             if phase == "RUNNING" and not drive:
                 phase = "STATUS_STALE"
