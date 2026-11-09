@@ -34,6 +34,23 @@ public final class PidRouteMapView extends View {
     private float poseX, poseY, poseYaw;
     private String routeName = "";
 
+    private static String placeName(String code) {
+        switch (code) {
+            case "A": return "애지문(2번 출구)";
+            case "D4": return "정몽구센터";
+            case "D5": return "2공학관";
+            default: return code;
+        }
+    }
+
+    private static String routeLabel(String name) {
+        if (name == null) return "";
+        String[] ends = name.split("_to_", -1);
+        return ends.length == 2
+                ? placeName(ends[0]) + " → " + placeName(ends[1])
+                : name;
+    }
+
     public PidRouteMapView(Context context) { super(context); }
     public PidRouteMapView(Context context, AttributeSet attrs) { super(context, attrs); }
 
@@ -130,10 +147,13 @@ public final class PidRouteMapView extends View {
         canvas.drawPath(routePath, paint);
         paint.setStyle(Paint.Style.FILL);
 
-        // Start and destination stay visible even before localization is ready.
-        marker(canvas, ox + xs[0] * scale, oy - ys[0] * scale, GREEN, "출발", w, h);
+        // Place names are for display only; route IDs sent to the NUC are unchanged.
+        String[] endpoints = routeName.split("_to_", -1);
+        String startLabel = endpoints.length == 2 ? placeName(endpoints[0]) : "출발";
+        String goalLabel = endpoints.length == 2 ? placeName(endpoints[1]) : "도착";
+        marker(canvas, ox + xs[0] * scale, oy - ys[0] * scale, GREEN, startLabel, w, h);
         marker(canvas, ox + xs[xs.length - 1] * scale,
-                oy - ys[ys.length - 1] * scale, BLUE, "도착", w, h);
+                oy - ys[ys.length - 1] * scale, BLUE, goalLabel, w, h);
 
         if (hasPose) {
             float px = ox + poseX * scale, py = oy - poseY * scale;
@@ -168,7 +188,7 @@ public final class PidRouteMapView extends View {
         paint.setTextAlign(Paint.Align.LEFT);
         paint.setTextSize(sp(13));
         paint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        canvas.drawText(routeName.replace("_to_", " → "), dp(14), dp(22), paint);
+        canvas.drawText(routeLabel(routeName), dp(14), dp(22), paint);
         paint.setTypeface(android.graphics.Typeface.DEFAULT);
         paint.setTextSize(sp(11));
         paint.setColor(hasPose ? GREEN : MUTED);
