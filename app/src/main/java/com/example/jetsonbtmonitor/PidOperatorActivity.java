@@ -583,8 +583,18 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 safetyState.setTextColor("CLEAR".equals(state) ? GREEN :
                         "SLOW".equals(state) ? AMBER : "STOP".equals(state) ? RED : MUTED);
                 String reason = safety.optString("reason", "이유 정보 없음");
-                safetyReason.setText("GOAL_APPROACH".equals(reason)
-                        ? "목적지 접근 중" : reason);
+                String replanState = safety.optString("replan_state", "IDLE");
+                if ("STOP".equals(state) && "FAILED".equals(replanState)) {
+                    safetyReason.setText("우회 경로 생성 실패 · 정지 중");
+                } else if ("STOP".equals(state) &&
+                        ("PLANNING".equals(replanState) ||
+                         "STAGING".equals(replanState) ||
+                         "COMMITTING".equals(replanState))) {
+                    safetyReason.setText("우회 경로 생성 중...");
+                } else {
+                    safetyReason.setText("GOAL_APPROACH".equals(reason)
+                            ? "목적지 접근 중" : reason);
+                }
             }
         } else if (!driveConfirmed && !"CHECKING".equals(phase) &&
                 !"START_REQUEST_ACCEPTED".equals(phase) && !"REJECTED".equals(phase)) {
