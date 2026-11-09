@@ -26,7 +26,7 @@ The original team's app and independent NUC `ros1_bluetooth_bridge.py` must **no
 - Actual FF–PID route assets are resolved from `<REPO_ROOT>/routes/route2_manual_20261031/`. The separate PID GitHub project's `waypoints/` is a source/archive location; it is **not automatically** the NUC route directory.
 - Bridge accepts `--pid-scripts` and `--routes-dir`; when `--routes-dir` is omitted it resolves from the PID scripts path. Ensure the UI and FF–PID read the same real route JSON.
 - Forward exactly the six allowed route IDs; no arbitrary shell commands.
-- FF–PID and the preflight script transform the raw `/fast_lio_icp/pose` into a **chair-centre** reference using `body_frame.py` and route-specific metadata. The bridge's raw GICP pose before drive confirmation is not necessarily chair-centred. Do not assert that all pose sources are equivalent.
+- FF–PID, preflight, and NUC bridge transform raw `/fast_lio_icp/pose` into the same **chair-centre** reference using `body_frame.py` and route-specific metadata. The bridge must not fall back to uncorrected GICP or switch the UI to predicted `pose_used` during drive without explicitly preserving display consistency.
 - The bridge must never directly publish `/cmd_vel`, alter FF–PID or Safety policy, expose occupied-driving `--test-clear`, or change existing ROS bridge services.
 
 ## Safety & protocol
