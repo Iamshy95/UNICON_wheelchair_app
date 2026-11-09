@@ -60,7 +60,9 @@ public final class PidOperatorActivity extends AppCompatActivity {
             "A_to_D4", "A_to_D5", "D4_to_A", "D4_to_D5", "D5_to_A", "D5_to_D4"
     };
     private static final String[] ROUTE_LABELS = {
-            "A → D4", "A → D5", "D4 → A", "D4 → D5", "D5 → A", "D5 → D4"
+            "애지문(2번 출구) → 정몽구센터", "애지문(2번 출구) → 2공학관",
+            "정몽구센터 → 애지문(2번 출구)", "정몽구센터 → 2공학관",
+            "2공학관 → 애지문(2번 출구)", "2공학관 → 정몽구센터"
     };
     private BluetoothWheelchairClient bluetooth;
     private LinearLayout root;
@@ -289,7 +291,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
         routeSpinner.setAdapter(adapter);
         routeSpinner.setSelection(1);
         add(routeCard, routeSpinner, 10);
-        currentRoute = text("선택 경로: A → D5", 13, MUTED, false);
+        currentRoute = text("선택 경로: " + ROUTE_LABELS[1], 13, MUTED, false);
         add(routeCard, currentRoute, 6);
         routeSpinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent, View v, int position, long id) {
@@ -562,7 +564,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
             routeSpinnerUpdating = true;
             routeSpinner.setSelection(Arrays.asList(ROUTES).indexOf(route));
             routeSpinnerUpdating = false;
-            currentRoute.setText("선택 경로: " + route.replace("_to_", " → "));
+            currentRoute.setText("선택 경로: " + ROUTE_LABELS[Arrays.asList(ROUTES).indexOf(route)]);
             send("route", null);
         }
         JSONObject pose = f.optJSONObject("pose");
