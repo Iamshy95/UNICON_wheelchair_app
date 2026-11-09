@@ -34,6 +34,23 @@ public final class PidRouteMapView extends View {
     private float poseX, poseY, poseYaw;
     private String routeName = "";
 
+    private static String placeName(String code) {
+        switch (code) {
+            case "A": return "애지문(2번 출구)";
+            case "D4": return "정몽구센터";
+            case "D5": return "2공학관";
+            default: return code;
+        }
+    }
+
+    private static String routeLabel(String name) {
+        if (name == null) return "";
+        String[] ends = name.split("_to_", -1);
+        return ends.length == 2
+                ? placeName(ends[0]) + " → " + placeName(ends[1])
+                : name;
+    }
+
     public PidRouteMapView(Context context) { super(context); }
     public PidRouteMapView(Context context, AttributeSet attrs) { super(context, attrs); }
 
@@ -168,7 +185,7 @@ public final class PidRouteMapView extends View {
         paint.setTextAlign(Paint.Align.LEFT);
         paint.setTextSize(sp(13));
         paint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        canvas.drawText(routeName.replace("_to_", " → "), dp(14), dp(22), paint);
+        canvas.drawText(routeLabel(routeName), dp(14), dp(22), paint);
         paint.setTypeface(android.graphics.Typeface.DEFAULT);
         paint.setTextSize(sp(11));
         paint.setColor(hasPose ? GREEN : MUTED);
