@@ -56,9 +56,13 @@ NUC OS에 `python3-dbus`, `python3-gi`와 BlueZ가 설치되어 있어야 합니
 
 연결되어 있는 동안 이벤트는 순서번호 `seq`와 함께 전송됩니다. 재연결 후에는 명령을 임의로 재실행하지 않고 주기적인 `telemetry`에서 마지막 이벤트와 실제 토픽 상태를 다시 확인합니다. 브릿지 종료 또는 NUC 재부팅 이후의 주행 상태 복원과 실기 테스트는 아직 검증되지 않았습니다.
 
+## 휠체어 중심 위치 보정
+
+`/fast_lio_icp/pose`는 GICP/FAST-LIO 센서의 차체 기준 위치로 취급하고, 브릿지에서 FF–PID의 `pid_drive_check.py`와 동일하게 `static_livox_localization/scripts/body_frame.py`의 `pose_correction("builtin", route_profile) @ reference_correction("chair_centre", route_chair_centre(metadata))`를 적용합니다. 경로별 `chair_centre_in_body_xyz` 메타데이터를 사용하므로 주행 전·중·후 모두 같은 중심점의 XY/Yaw를 표시합니다. `pose_used`(제어 예측 자세)로 앱 표시 원점을 임의로 전환하지 않습니다. 변환 모듈이나 메타데이터가 없으면 **원본 GICP 좌표로 대신 표시하지 않고** 위치를 미수신 상태로 둡니다. 좌표계 및 실제 장착 오프셋 검증은 NUC 통합 테스트에서 진행해야 합니다.
+
 ## 수신 텔레메트리
 
-`protocol_version=4`, `ready`(작업 상태·최근 로그), `selected_route`, `active_route`, `drive_state`, `drive`, `safety`(상태·이유), `pose`(현재 위치·방향), `wheel`을 2 Hz로 전송합니다. ROS 토픽은 최신값에 유효시간을 적용해 오래된 데이터를 사용하지 않습니다.
+`protocol_version=4`, `ready`(작업 상태·최근 로그), `selected_route`, `active_route`, `drive_state`, `drive`, `safety`(상태·이유), `pose`(보정된 휠체어 중심 위치·방향), `wheel`을 2 Hz로 전송합니다. ROS 토픽은 최신값에 유효시간을 적용해 오래된 데이터를 사용하지 않습니다.
 
 - `/pid_safety/status`
 - `/ff_pid/status`
