@@ -14,7 +14,7 @@
 **현재는 임시 1단계(기존 2안)만 구현했습니다.** 탑승자 화면에는 선택한 경로 선, 출발·도착 지점, 실시간 휠체어 위치와 방향 화살표를 표시합니다. **최종 앱에는 PCD 기반 2D 배경지도를 반드시 추가할 계획입니다.**
 
 - 경로: NUC가 실제 주행에 사용하는 6개 JSON 경로 중 선택한 경로를 Bluetooth로 받습니다. 전송 지점을 줄이더라도 실제 FF–PID 주행 경로는 변경되지 않습니다.
-- 위치/방향: NUC ROS 측위 데이터에서 갱신하며, 오래되거나 끊긴 위치를 실시간으로 표시하지 않습니다.
+- 위치/방향: NUC 브릿지가 FF–PID와 같은 `body_frame.py`·경로 JSON의 `chair_centre_in_body_xyz`를 적용해 **주행 전·중·후 동일한 휠체어 중심 기준**의 ROS `map` 좌표를 전송합니다. 원본 GICP 좌표를 중심 좌표로 잘못 표시하지 않으며, 보정 실패·통신 끊김·정보 만료 시 위치 표시를 숨깁니다.
 - **다음 지도 개발 단계 (미구현·필수 예정):** NUC에 이미 존재하는 PCD 맵을 적절한 높이 필터링·격자화·노이즈 정리로 2D PNG로 만들고, ROS `map` 좌표계에 맞춰 정적 배경으로 앱에 추가합니다. 겹치는 점을 단순 투영하는 방식이나 주행 가능 영역 마스크를 배경지도로 사용하는 방식은 피합니다. 건물·통로를 알아보기 쉽게 정리하고 A·D4·D5 표기를 추가합니다. 경로 및 실시간 위치는 PNG 위에 별도 오버레이합니다.
 - Bluetooth에 연결하지 않은 에뮬레이터에서는 경로가 실제로 수신되지 않아 ‘경로 데이터 대기 중’이 정상입니다.
 
@@ -86,6 +86,8 @@ source-linux/routes/route2_manual_20261031/
 | `app/src/main/java/com/example/jetsonbtmonitor/BluetoothWheelchairClient.java` | Bluetooth 연결 및 자동 재연결 |
 | `nuc/pid_bt_bridge.py` | ROS1 ↔ Bluetooth 메시지와 READY/DRIVE 명령 처리 |
 | [`nuc/README.md`](nuc/README.md) | NUC 브릿지 실행·명령·텔레메트리 상세 |
+
+Bluetooth 장치 이름은 페어링 목록에서 `nuc`, `wheelchair`, 또는 정확히 `mprp3`인 기기를 자동 인식합니다. 한 번 선택되면 MAC 주소를 저장해 이후 연결 시 우선 사용합니다. 별도의 기기 선택 화면은 없습니다.
 
 ## Android 빌드
 
