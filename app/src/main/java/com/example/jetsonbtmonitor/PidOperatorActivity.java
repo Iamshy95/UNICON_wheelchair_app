@@ -73,7 +73,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
     private Button lidarTestStart, lidarTestStop;
     private String lidarTestPhase = "STOPPED";
     private String readyPhase = "UNKNOWN";
-    private TextView driveNote, safetyState, safetyReason, currentRoute;
+    private TextView driveNote, safetyState, safetyReason, currentRoute, wheelModeText;
     private Spinner routeSpinner;
     private PidRouteMapView mapView;
     private Button readyStart, readyStop, driveStart, driveStop, connect;
@@ -319,11 +319,29 @@ public final class PidOperatorActivity extends AppCompatActivity {
         LinearLayout routeCard = card(riderScreen);
         add(routeCard, text("경로 선택", 18, INK, true), 0);
         routeSpinner = new Spinner(this);
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(
-                this, android.R.layout.simple_spinner_item, ROUTE_LABELS);
+        ArrayAdapter<String> adapter = new ArrayAdapter<String>(
+                this, android.R.layout.simple_spinner_item, ROUTE_LABELS) {
+            @Override public View getView(int position, View convertView, android.view.ViewGroup parent) {
+                View view = super.getView(position, convertView, parent);
+                if (view instanceof TextView) {
+                    ((TextView) view).setTextColor(INK);
+                    ((TextView) view).setTextSize(16f);
+                }
+                return view;
+            }
+            @Override public View getDropDownView(int position, View convertView, android.view.ViewGroup parent) {
+                View view = super.getDropDownView(position, convertView, parent);
+                if (view instanceof TextView) {
+                    ((TextView) view).setTextColor(INK);
+                    view.setBackgroundColor(WHITE);
+                }
+                return view;
+            }
+        };
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         routeSpinner.setAdapter(adapter);
         routeSpinner.setSelection(1);
+        routeSpinner.setMinimumHeight(dp(52));
         add(routeCard, routeSpinner, 10);
         currentRoute = text("선택 경로: " + ROUTE_LABELS[1], 13, MUTED, false);
         add(routeCard, currentRoute, 6);
@@ -376,6 +394,8 @@ public final class PidOperatorActivity extends AppCompatActivity {
 
         LinearLayout statusCard = card(riderScreen);
         add(statusCard, text("주행 상태 및 안내", 18, INK, true), 0);
+        wheelModeText = text("현재 모드: 확인 불가", 16, MUTED, true);
+        add(statusCard, wheelModeText, 10);
         driveNote = text("경로를 선택하고 주행 시작을 누르세요.", 14, INK, false);
         driveNote.setLineSpacing(dp(5), 1f);
         add(statusCard, driveNote, 11);
@@ -715,6 +735,18 @@ public final class PidOperatorActivity extends AppCompatActivity {
             routeSpinnerUpdating = false;
             currentRoute.setText("선택 경로: " + ROUTE_LABELS[Arrays.asList(ROUTES).indexOf(route)]);
             send("route", null);
+        }
+        JSONObject wheel = f.optJSONObject("wheel");
+        String mode = wheel == null ? "UNKNOWN" : wheel.optString("mode_name", "UNKNOWN");
+        if ("MANUAL".equals(mode)) {
+            wheelModeText.setText("현재 모드: 수동 조작 모드 (조종간)");
+            wheelModeText.setTextColor(AMBER);
+        } else if ("AUTO".equals(mode)) {
+            wheelModeText.setText("현재 모드: 자율주행 모드");
+            wheelModeText.setTextColor(GREEN);
+        } else {
+            wheelModeText.setText("현재 모드: 확인 불가");
+            wheelModeText.setTextColor(MUTED);
         }
         JSONObject pose = f.optJSONObject("pose");
         mapView.setPose(pose);
