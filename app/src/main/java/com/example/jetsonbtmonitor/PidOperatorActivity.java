@@ -632,6 +632,28 @@ public final class PidOperatorActivity extends AppCompatActivity {
         }
     }
 
+    private static String explainReadyIssue(String raw) {
+        // Keep unknown diagnostics readable instead of hiding them.
+        return raw.replace("Livox lidar silent", "LiDAR 데이터 수신 실패")
+                .replace("Livox built-in IMU silent", "LiDAR 내장 IMU 데이터 수신 실패")
+                .replace("ROS Master not reachable", "ROS Master 연결 실패")
+                .replace("FAST-LIO Odometry silent", "FAST-LIO 위치 데이터 수신 실패")
+                .replace("wheel_status silent", "모터 상태 데이터 수신 실패")
+                .replace("fusion object summary silent", "장애물 인식 결과 수신 실패")
+                .replace("ready health check failed", "READY 최종 검사 실패")
+                .replace("Map Pose", "지도 위치추정")
+                .replace("Wheel Status", "모터 상태")
+                .replace("UART Diagnostics", "UART 통신 진단")
+                .replace("GICP Diagnostics", "GICP 진단")
+                .replace("GICP State", "GICP 위치추정 상태")
+                .replace("Perception", "장애물 인식")
+                .replace("GICP Exclusions", "GICP 제외 영역")
+                .replace("NOT_RUNNING", "실행 안 됨")
+                .replace("NOT_VERIFIED", "검증되지 않음")
+                .replace("NOT_STABLE", "안정화되지 않음")
+                .replace("STALE", "데이터 수신 안 됨");
+    }
+
     private void renderLidarTest(JSONObject test) {
         if (test == null) return;
         String state = test.optString("state", "STOPPED");
@@ -648,9 +670,12 @@ public final class PidOperatorActivity extends AppCompatActivity {
         boolean lidarOk = "OK".equals(test.optString("lidar"));
         boolean imuOk = "OK".equals(test.optString("imu"));
         boolean live = "RUNNING".equals(state);
-        lidarTestStatus.setText(!live ? "테스트 상태 확인 중" :
+        boolean monitorStale = "MONITOR_STALE".equals(state);
+        lidarTestStatus.setText(monitorStale ? "테스트 상태 수신 중단" :
+                !live ? "테스트 상태 확인 중" :
                 lidarOk && imuOk ? "LiDAR · IMU 정상 수신 중" : "센서 데이터 수신 확인 중");
-        lidarTestStatus.setTextColor(live && lidarOk && imuOk ? GREEN : AMBER);
+        lidarTestStatus.setTextColor(monitorStale ? RED :
+                live && lidarOk && imuOk ? GREEN : AMBER);
         StringBuilder details = new StringBuilder();
         details.append("ROS Master: ").append(koreanState(test.optString("master", "UNKNOWN")));
         details.append("\nLivox 드라이버: ").append(koreanState(test.optString("driver", "UNKNOWN")));
@@ -715,7 +740,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 if (failures != null && failures.length() > 0) {
                     problems.append("\n실패 원인:");
                     for (int i = 0; i < failures.length(); i++) {
-                        problems.append("\n• ").append(failures.optString(i));
+                        problems.append("\n• ").append(explainReadyIssue(failures.optString(i)));
                     }
                 } else {
                     problems.append("\n실패한 단계를 실행 기록에서 확인하세요.");
