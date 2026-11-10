@@ -184,10 +184,13 @@ class Bridge:
             self._consume_script_event(name, line)
             if name == "ready_start" and line:
                 self.ready_history.append(line[:300])
-                if "[FAIL]" in line:
-                    failure = line.split("[FAIL]", 1)[1].strip()
-                    if failure and failure not in self.ready_failures:
-                        self.ready_failures.append(failure[:240])
+                # pid_ready_monitor.py emits one [ERROR] for EACH failed
+                # subsystem; preserve all, not only the final shell [FAIL].
+                for marker in ("[FAIL]", "[ERROR]"):
+                    if marker in line:
+                        failure = line.split(marker, 1)[1].strip()
+                        if failure and failure not in self.ready_failures:
+                            self.ready_failures.append(failure[:240])
         if line:
             LOG.info("%s: %s", name, line)
 
