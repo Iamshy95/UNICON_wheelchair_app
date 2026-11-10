@@ -73,6 +73,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
     private Button lidarTestStart, lidarTestStop;
     private String lidarTestPhase = "STOPPED";
     private boolean lidarTestWasRunning = false;
+    private String lidarTestLastError = null;
     private String readyPhase = "UNKNOWN";
     private TextView driveNote, safetyState, safetyReason, currentRoute, wheelModeText;
     private Spinner routeSpinner;
@@ -296,6 +297,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
         lidarButtons.addView(lidarTestStop, ltStop);
         add(lidarCard, lidarButtons, 12);
         lidarTestStart.setOnClickListener(v -> {
+            lidarTestLastError = null;
             lidarTestPhase = "STARTING";
             lidarTestStatus.setText("테스트 준비 중");
             updateControls();
@@ -556,15 +558,17 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 if ("lidar_test_start".equals(name)) {
                     if (!f.optBoolean("ok", false)) {
                         lidarTestPhase = "STOPPED";
+                        lidarTestLastError = f.optString("detail", "실행 환경을 확인하세요.");
                         lidarTestStatus.setText("테스트 시작 실패");
                         lidarTestStatus.setTextColor(RED);
-                        lidarTestDetail.setText(f.optString("detail", "실행 환경을 확인하세요."));
+                        lidarTestDetail.setText(lidarTestLastError);
                     }
                 } else if ("lidar_test_stop".equals(name)) {
                     if (!f.optBoolean("ok", false)) {
+                        lidarTestLastError = f.optString("detail", "프로세스 상태 확인 필요");
                         lidarTestStatus.setText("테스트 종료 실패 · 프로세스 확인 필요");
                         lidarTestStatus.setTextColor(RED);
-                        lidarTestDetail.setText(f.optString("detail", ""));
+                        lidarTestDetail.setText(lidarTestLastError);
                     }
                 } else if ("ready_start".equals(name)) {
                     if (f.optBoolean("ok", false)) {
@@ -588,6 +592,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
                     if ("drive_stop".equals(cmd)) currentDrivePhase = "STATUS_STALE";
                     String detail = f.optString("detail");
                     if (cmd.startsWith("lidar_test_")) {
+                        lidarTestLastError = detail;
                         lidarTestStatus.setText("테스트 명령 거부");
                         lidarTestStatus.setTextColor(RED);
                         lidarTestDetail.setText(detail);
@@ -658,13 +663,22 @@ public final class PidOperatorActivity extends AppCompatActivity {
         if (test == null) return;
         String state = test.optString("state", "STOPPED");
         lidarTestPhase = state;
-        if (!"STOPPED".equals(state)) lidarTestWasRunning = true;
+        if ("RUNNING".equals(state)) {
+            lidarTestWasRunning = true;
+            lidarTestLastError = null;
+        }
         if ("STOPPED".equals(state)) {
-            lidarTestStatus.setText("테스트 미실행");
-            lidarTestStatus.setTextColor(MUTED);
-            lidarTestDetail.setText(lidarTestWasRunning
-                    ? "테스트 종료 후 READY를 실행하세요."
-                    : "READY 전에 LiDAR 연결 상태를 점검할 수 있습니다.");
+            if (lidarTestLastError != null) {
+                lidarTestStatus.setText("LiDAR 테스트 실행 오류");
+                lidarTestStatus.setTextColor(RED);
+                lidarTestDetail.setText(lidarTestLastError);
+            } else {
+                lidarTestStatus.setText("테스트 미실행");
+                lidarTestStatus.setTextColor(MUTED);
+                lidarTestDetail.setText(lidarTestWasRunning
+                        ? "테스트 종료 후 READY를 실행하세요."
+                        : "READY 전에 LiDAR 연결 상태를 점검할 수 있습니다.");
+            }
             return;
         }
         boolean lidarOk = "OK".equals(test.optString("lidar"));
