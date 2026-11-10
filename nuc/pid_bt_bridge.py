@@ -63,6 +63,10 @@ class Bridge:
     def _lidar_test(self):
         """Read test-owned snapshot without joining its temporary ROS master."""
         if not (self.lidar_test_state / "active").exists():
+            if self._running("lidar_test_start"):
+                return {"state": "STARTING", "lidar": "WAITING", "imu": "WAITING"}
+            if self._running("lidar_test_stop"):
+                return {"state": "STOPPING", "lidar": "UNKNOWN", "imu": "UNKNOWN"}
             return {"state": "STOPPED", "lidar": "UNKNOWN", "imu": "UNKNOWN"}
         try:
             result = json.loads((self.lidar_test_state / "status.json").read_text(encoding="utf-8"))
@@ -402,7 +406,8 @@ class Bridge:
                         raise RuntimeError("LiDAR test still starting")
                     response.update(self._run_job("lidar_test_stop", ["pid_lidar_test.sh", "stop"]))
             elif command in ("ready_start", "stack_start"):
-                if (self.lidar_test_state / "active").exists():
+                if ((self.lidar_test_state / "active").exists() or
+                        self._running("lidar_test_start") or self._running("lidar_test_stop")):
                     raise RuntimeError("LiDAR test active. Press Test End before READY")
                 with self.lock:
                     self.ready_history.clear()
@@ -433,7 +438,8 @@ class Bridge:
                 response.update(ok=True, detail="Current telemetry follows")
                 extra = self.telemetry()
             elif command == "drive_start":
-                if (self.lidar_test_state / "active").exists():
+                if ((self.lidar_test_state / "active").exists() or
+                        self._running("lidar_test_start") or self._running("lidar_test_stop")):
                     raise RuntimeError("LiDAR test active. End test before driving")
                 name = payload.get("route", self.selected_route)
                 if name not in ROUTES:
