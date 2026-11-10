@@ -69,6 +69,10 @@ public final class PidOperatorActivity extends AppCompatActivity {
     private LinearLayout adminScreen, riderScreen;
     private TextView commonBluetooth, adminBluetooth, riderBluetooth;
     private TextView readyState, readyComponents, readyLogs, readyNote;
+    private TextView lidarTestStatus, lidarTestDetail;
+    private Button lidarTestStart, lidarTestStop;
+    private String lidarTestPhase = "STOPPED";
+    private String readyPhase = "UNKNOWN";
     private TextView driveNote, safetyState, safetyReason, currentRoute;
     private Spinner routeSpinner;
     private PidRouteMapView mapView;
@@ -269,7 +273,37 @@ public final class PidOperatorActivity extends AppCompatActivity {
         readyLogs = text("", 12, MUTED, false);
         readyLogs.setLineSpacing(dp(3), 1f);
         add(rcard, readyLogs, 8);
-        readyStart.setOnClickListener(v -> send("ready_start", null));
+        readyStart.setOnClickListener(v -> {
+            readyNote.setText("READY 실행 중 · 각 단계 상태를 확인하고 있습니다.");
+            readyLogs.setText("");
+            send("ready_start", null);
+        });
+        LinearLayout lidarCard = card(adminScreen);
+        add(lidarCard, text("LiDAR 연결 테스트", 18, INK, true), 0);
+        add(lidarCard, text("ROS Master와 Livox 드라이버만 실행합니다. 선 연결을 점검하는 동안 계속 감시합니다.", 13, MUTED, false), 7);
+        lidarTestStatus = text("테스트 미실행", 17, MUTED, true);
+        add(lidarCard, lidarTestStatus, 11);
+        lidarTestDetail = text("라이다/IMU 데이터 수신 여부를 확인할 수 있습니다.", 14, MUTED, false);
+        lidarTestDetail.setLineSpacing(dp(4), 1f);
+        add(lidarCard, lidarTestDetail, 9);
+        LinearLayout lidarButtons = new LinearLayout(this);
+        lidarTestStart = button("테스트 시작", BLUE);
+        lidarTestStop = button("테스트 종료", RED);
+        lidarButtons.addView(lidarTestStart, new LinearLayout.LayoutParams(0, dp(55), 1));
+        LinearLayout.LayoutParams ltStop = new LinearLayout.LayoutParams(0, dp(55), 1);
+        ltStop.leftMargin = dp(8);
+        lidarButtons.addView(lidarTestStop, ltStop);
+        add(lidarCard, lidarButtons, 12);
+        lidarTestStart.setOnClickListener(v -> {
+            lidarTestPhase = "STARTING";
+            lidarTestStatus.setText("테스트 준비 중");
+            updateControls();
+            send("lidar_test_start", null);
+        });
+        lidarTestStop.setOnClickListener(v -> {
+            lidarTestStatus.setText("테스트 종료 요청 중");
+            send("lidar_test_stop", null);
+        });
         readyStop.setOnClickListener(v -> new AlertDialog.Builder(this)
                 .setTitle("READY 종료")
                 .setMessage("주행 중이면 먼저 정지를 요청하고 확인한 뒤 READY 시스템을 종료합니다.")
@@ -365,12 +399,19 @@ public final class PidOperatorActivity extends AppCompatActivity {
     private void updateControls() {
         if (readyStart == null) return;
         boolean link = connected && System.currentTimeMillis() - lastFrameMs < 3500;
-        readyStart.setEnabled(link);
-        readyStop.setEnabled(link);
+        boolean testActive = !"STOPPED".equals(lidarTestPhase);
+        readyStart.setEnabled(link && !testActive);
+        readyStop.setEnabled(link && !testActive);
+        if (lidarTestStart != null) {
+            lidarTestStart.setEnabled(link && !testActive &&
+                    !"READY".equals(readyPhase) && !"STARTING".equals(readyPhase) &&
+                    !"STOPPING".equals(readyPhase));
+            lidarTestStop.setEnabled(link && testActive);
+        }
         connect.setEnabled(!connected);
         boolean active = Arrays.asList("CHECKING", "START_REQUEST_ACCEPTED",
                 "RUNNING", "STOPPING", "STATUS_STALE").contains(currentDrivePhase);
-        driveStart.setEnabled(link && !active);
+        driveStart.setEnabled(link && !active && !testActive);
         driveStop.setEnabled(link && active && !"STOPPING".equals(currentDrivePhase));
     }
 
@@ -491,7 +532,30 @@ public final class PidOperatorActivity extends AppCompatActivity {
             } else if ("job_result".equals(type)) {
                 String name = f.optString("job");
                 String message = (f.optBoolean("ok") ? "완료: " : "실패: ") + name;
-                readyNote.setText(message + "\n" + f.optString("detail", ""));
+                if ("lidar_test_start".equals(name)) {
+                    if (!f.optBoolean("ok", false)) {
+                        lidarTestPhase = "STOPPED";
+                        lidarTestStatus.setText("테스트 시작 실패");
+                        lidarTestStatus.setTextColor(RED);
+                        lidarTestDetail.setText(f.optString("detail", "실행 환경을 확인하세요."));
+                    }
+                } else if ("lidar_test_stop".equals(name)) {
+                    if (!f.optBoolean("ok", false)) {
+                        lidarTestStatus.setText("테스트 종료 실패 · 프로세스 확인 필요");
+                        lidarTestStatus.setTextColor(RED);
+                        lidarTestDetail.setText(f.optString("detail", ""));
+                    }
+                } else if ("ready_start".equals(name)) {
+                    if (f.optBoolean("ok", false)) {
+                        readyNote.setText("READY 완료 · 모든 필수 검사 통과");
+                        readyNote.setTextColor(GREEN);
+                    } else {
+                        readyNote.setText("READY 실행 실패 · 아래 실패 원인을 확인하세요.");
+                        readyNote.setTextColor(RED);
+                    }
+                } else if ("ready_stop".equals(name)) {
+                    readyNote.setText(message + "\n" + f.optString("detail", ""));
+                }
                 if ("drive_stop".equals(name) && !f.optBoolean("ok")) {
                     currentDrivePhase = "STATUS_STALE";
                     showUnknownSafety("주행 종료가 확인되지 않았습니다.");
@@ -501,8 +565,17 @@ public final class PidOperatorActivity extends AppCompatActivity {
                     String cmd = f.optString("command");
                     if ("drive_start".equals(cmd)) currentDrivePhase = "REJECTED";
                     if ("drive_stop".equals(cmd)) currentDrivePhase = "STATUS_STALE";
-                    readyNote.setText("명령 거부: " + f.optString("detail"));
-                    driveNote.setText("명령 거부: " + f.optString("detail"));
+                    String detail = f.optString("detail");
+                    if (cmd.startsWith("lidar_test_")) {
+                        lidarTestStatus.setText("테스트 명령 거부");
+                        lidarTestStatus.setTextColor(RED);
+                        lidarTestDetail.setText(detail);
+                    } else if (cmd.startsWith("ready_")) {
+                        readyNote.setText("READY 요청 거부: " + detail);
+                        readyNote.setTextColor(RED);
+                    } else {
+                        driveNote.setText("명령 거부: " + detail);
+                    }
                 }
             }
             updateControls();
@@ -522,11 +595,57 @@ public final class PidOperatorActivity extends AppCompatActivity {
         currentDrivePhase = "REJECTED";
     }
 
+    private static String koreanState(String raw) {
+        switch (raw) {
+            case "OK": return "정상 수신";
+            case "STALE": return "데이터 수신 안 됨";
+            case "UNKNOWN": return "확인 불가";
+            case "FAILED": return "실패";
+            case "RUNNING": return "실행 중";
+            case "STARTING": return "시작 중";
+            case "STOPPING": return "종료 중";
+            case "STOPPED": return "종료됨";
+            case "READY": return "준비 완료";
+            case "WAITING": return "수신 대기 중";
+            default: return raw;
+        }
+    }
+
+    private void renderLidarTest(JSONObject test) {
+        if (test == null) return;
+        String state = test.optString("state", "STOPPED");
+        lidarTestPhase = state;
+        if ("STOPPED".equals(state)) {
+            lidarTestStatus.setText("테스트 미실행");
+            lidarTestStatus.setTextColor(MUTED);
+            lidarTestDetail.setText("테스트 종료 후 READY를 실행하세요.");
+            return;
+        }
+        boolean lidarOk = "OK".equals(test.optString("lidar"));
+        boolean imuOk = "OK".equals(test.optString("imu"));
+        boolean live = "RUNNING".equals(state);
+        lidarTestStatus.setText(!live ? "테스트 상태 확인 중" :
+                lidarOk && imuOk ? "LiDAR · IMU 정상 수신 중" : "센서 데이터 수신 확인 중");
+        lidarTestStatus.setTextColor(live && lidarOk && imuOk ? GREEN : AMBER);
+        StringBuilder details = new StringBuilder();
+        details.append("ROS Master: ").append(koreanState(test.optString("master", "UNKNOWN")));
+        details.append("\nLivox 드라이버: ").append(koreanState(test.optString("driver", "UNKNOWN")));
+        details.append("\nLiDAR: ").append(koreanState(test.optString("lidar", "WAITING")));
+        details.append("\nIMU: ").append(koreanState(test.optString("imu", "WAITING")));
+        details.append("\nLiDAR 수신 끊김: ").append(test.optInt("lidar_dropouts", 0)).append("회");
+        details.append("\nIMU 수신 끊김: ").append(test.optInt("imu_dropouts", 0)).append("회");
+        details.append("\n\n테스트는 자동 종료되지 않습니다. 연결을 점검한 뒤 [테스트 종료]를 누르세요.");
+        details.append("\n테스트 종료 후 READY를 실행하세요.");
+        lidarTestDetail.setText(details.toString());
+    }
+
     private void renderTelemetry(JSONObject f) {
+        renderLidarTest(f.optJSONObject("lidar_test"));
         JSONObject ready = f.optJSONObject("ready");
         if (ready != null) {
             String state = ready.optString("state", "UNKNOWN");
-            readyState.setText("READY: " + state);
+            readyPhase = state;
+            readyState.setText("READY: " + koreanState(state));
             readyState.setTextColor("READY".equals(state) ? GREEN :
                     "FAILED".equals(state) ? RED : MUTED);
             JSONObject components = ready.optJSONObject("components");
@@ -536,8 +655,8 @@ public final class PidOperatorActivity extends AppCompatActivity {
                         "GICP Diagnostics", "Perception", "GICP Exclusions",
                         "Wheel Status", "UART Diagnostics"};
                 for (String key : ordered) {
-                    details.append(key).append(": ").append(components.optString(key, "UNKNOWN"))
-                            .append("\n");
+                    String value = components.optString(key, "UNKNOWN");
+                    details.append(key).append(": ").append(koreanState(value)).append("\n");
                 }
                 readyComponents.setText(details.toString().trim());
             }
@@ -555,7 +674,36 @@ public final class PidOperatorActivity extends AppCompatActivity {
                         }
                     }
                 }
+                // The latest tail alone hides the first failure and leaves stale
+                // cleanup messages after a successful run. Keep full run history.
+                JSONArray history = ready.optJSONArray("history");
+                if (history != null) {
+                    log.setLength(0);
+                    for (int i = 0; i < history.length(); i++) {
+                        log.append(history.optString(i)).append("\n");
+                    }
+                }
                 readyLogs.setText(log.toString().trim());
+            }
+            JSONArray failures = ready.optJSONArray("failures");
+            if ("FAILED".equals(state)) {
+                StringBuilder problems = new StringBuilder("READY 실행 실패");
+                if (failures != null && failures.length() > 0) {
+                    problems.append("\n실패 원인:");
+                    for (int i = 0; i < failures.length(); i++) {
+                        problems.append("\n• ").append(failures.optString(i));
+                    }
+                } else {
+                    problems.append("\n실패한 단계를 실행 기록에서 확인하세요.");
+                }
+                readyNote.setText(problems.toString());
+                readyNote.setTextColor(RED);
+            } else if ("READY".equals(state)) {
+                readyNote.setText("READY 완료 · 필수 검사 통과");
+                readyNote.setTextColor(GREEN);
+            } else if ("STARTING".equals(state)) {
+                readyNote.setText("READY 실행 중 · 순서대로 검사하고 있습니다.");
+                readyNote.setTextColor(MUTED);
             }
         }
         String route = f.optString("selected_route", "");
