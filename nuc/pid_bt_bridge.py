@@ -569,7 +569,13 @@ class Bridge:
                 break
 
     def attach_ros_when_available(self):
-        """Bluetooth works before roscore: subscribe after READY starts it."""
+        """Maintain ROS subscriptions across test-owned ROS Master restarts.
+
+        rospy.init_node() may only run once in a process. Re-register the
+        subscribers when the master's own PID changes instead of calling
+        init_node() again or assuming the old registration survives.
+        The temporary LiDAR test master must never become the live READY graph.
+        """
         try:
             import rospy
             from std_msgs.msg import String, Int16MultiArray
@@ -578,55 +584,90 @@ class Bridge:
             from nav_msgs.msg import Odometry
             from sensor_msgs.msg import Imu
             from visualization_msgs.msg import MarkerArray
+            from xmlrpc.client import ServerProxy
+            from urllib.parse import urlparse
         except ImportError as exc:
             LOG.error("ROS Noetic imports missing: %s", exc)
             return
 
+        initialized = False
+        last_master_pid = None
+        subscribers = []
+
         while True:
             try:
-                # Avoid binding rospy to the temporary LiDAR-test ROS graph.
                 if (self.lidar_test_state / "active").exists():
-                    time.sleep(2)
+                    # Even if READY had previously been connected, it must not
+                    # receive or register against the test-only ROS graph.
+                    for sub in subscribers:
+                        sub.unregister()
+                    subscribers = []
+                    last_master_pid = None
+                    self.ros_connected = False
+                    time.sleep(1)
                     continue
+
                 uri = os.environ.get("ROS_MASTER_URI", "http://127.0.0.1:11311")
-                from urllib.parse import urlparse
                 dest = urlparse(uri)
                 with socket.create_connection((dest.hostname, dest.port or 11311), timeout=1):
                     pass
                 if (self.lidar_test_state / "active").exists():
-                    time.sleep(2)
+                    time.sleep(1)
                     continue
-                rospy.init_node("pid_bt_bridge", anonymous=False, disable_signals=True)
-                rospy.Subscriber("/pid_safety/status", String,
-                                 lambda msg: self._json_cb("safety", msg), queue_size=2)
-                rospy.Subscriber("/ff_pid/status", String,
-                                 lambda msg: self._json_cb("drive", msg), queue_size=2)
-                rospy.Subscriber("/fast_lio_icp/pose", PoseWithCovarianceStamped,
-                                 self._pose_cb, queue_size=2)
-                rospy.Subscriber("/wheel_status", Int16MultiArray,
-                                 self._wheel_cb, queue_size=2)
-                rospy.Subscriber("/fast_lio_icp/localization_diagnostics", DiagnosticArray,
-                                 self._diag_cb, queue_size=2)
-                # READY monitoring uses topic freshness only; readiness authorization
-                # remains in pid_ready_monitor.py --check-ready.
-                for key, topic, typ in (
-                    ("lidar", "/livox/lidar", rospy.AnyMsg),
-                    ("imu", "/livox/imu", Imu),
-                    ("fast_lio", "/Odometry", Odometry),
-                    ("perception", "/perception/objects_summary", String),
-                    ("exclusion", "/perception/dynamic_boxes", MarkerArray),
-                    ("uart", "/uart_tx_diag", String),
-                ):
-                    rospy.Subscriber(topic, typ,
-                                     lambda msg, k=key: self._signal_cb(k, msg),
-                                     queue_size=1)
+
+                # ROS Master getPid returns the master process ID, not the
+                # Bluetooth bridge's PID. A different PID means a new graph.
+                with ServerProxy(uri, allow_none=True) as master:
+                    code, message, current_pid = master.getPid("/pid_bt_bridge")
+                if code != 1:
+                    raise RuntimeError("ROS Master did not return a valid PID: " + str(message))
+
+                if not initialized:
+                    rospy.init_node("pid_bt_bridge", anonymous=False, disable_signals=True)
+                    initialized = True
+                if current_pid != last_master_pid or not subscribers:
+                    for sub in subscribers:
+                        sub.unregister()
+                    subscribers = []
+                    # Keep references so they can be unregistered when this
+                    # Master disappears. All telemetry is read-only.
+                    subscribers.append(rospy.Subscriber("/pid_safety/status", String,
+                        lambda msg: self._json_cb("safety", msg), queue_size=2))
+                    subscribers.append(rospy.Subscriber("/ff_pid/status", String,
+                        lambda msg: self._json_cb("drive", msg), queue_size=2))
+                    subscribers.append(rospy.Subscriber("/fast_lio_icp/pose",
+                        PoseWithCovarianceStamped, self._pose_cb, queue_size=2))
+                    subscribers.append(rospy.Subscriber("/wheel_status",
+                        Int16MultiArray, self._wheel_cb, queue_size=2))
+                    subscribers.append(rospy.Subscriber(
+                        "/fast_lio_icp/localization_diagnostics",
+                        DiagnosticArray, self._diag_cb, queue_size=2))
+                    for key, topic, typ in (
+                        ("lidar", "/livox/lidar", rospy.AnyMsg),
+                        ("imu", "/livox/imu", Imu),
+                        ("fast_lio", "/Odometry", Odometry),
+                        ("perception", "/perception/objects_summary", String),
+                        ("exclusion", "/perception/dynamic_boxes", MarkerArray),
+                        ("uart", "/uart_tx_diag", String),
+                    ):
+                        subscribers.append(rospy.Subscriber(
+                            topic, typ,
+                            lambda msg, k=key: self._signal_cb(k, msg),
+                            queue_size=1))
+                    last_master_pid = current_pid
+                    # Clear old source timestamps after a new graph joins.
+                    with self.lock:
+                        self.latest.clear()
+                    LOG.info("ROS subscribers registered to master PID=%s", current_pid)
+
                 self.rospy = rospy
                 self.ros_connected = True
-                LOG.info("ROS1 subscriptions attached")
-                return
+                time.sleep(2)
             except Exception as exc:
-                LOG.info("ROS not yet online: %s", exc)
-                time.sleep(3)
+                self.ros_connected = False
+                last_master_pid = None
+                LOG.info("ROS Master unavailable or resubscribe required: %s", exc)
+                time.sleep(2)
 
     def telemetry(self):
         now = time.monotonic()
