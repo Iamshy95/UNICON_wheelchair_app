@@ -53,6 +53,28 @@ class Bridge:
         self.stop_alarm = None
         self._pose_transform_cache = {}
         self._pose_transform_errors = set()
+        self.ready_history = deque(maxlen=100)
+        self.ready_failures = []
+        self.ready_run_id = 0
+        self.lidar_test_state = Path(os.environ.get(
+            "PID_LIDAR_TEST_STATE_DIR",
+            str(Path.home() / ".local/state/pid_lidar_test")))
+
+    def _lidar_test(self):
+        """Read test-owned snapshot without joining its temporary ROS master."""
+        if not (self.lidar_test_state / "active").exists():
+            return {"state": "STOPPED", "lidar": "UNKNOWN", "imu": "UNKNOWN"}
+        try:
+            result = json.loads((self.lidar_test_state / "status.json").read_text(encoding="utf-8"))
+            if not isinstance(result, dict):
+                raise ValueError("Invalid LiDAR test status")
+            age = time.time() - float(result.get("timestamp", 0))
+            if result.get("state") == "RUNNING" and (age < -3 or age > 4):
+                result = dict(result)
+                result.update(state="MONITOR_STALE", lidar="UNKNOWN", imu="UNKNOWN")
+            return result
+        except (OSError, ValueError, TypeError):
+            return {"state": "STARTING", "lidar": "WAITING", "imu": "WAITING"}
 
     def _emit(self, event):
         """Remember structured events for every active Bluetooth session."""
@@ -156,6 +178,12 @@ class Bridge:
                 if self.job_status["name"] == name:
                     self.job_status = dict(job)
             self._consume_script_event(name, line)
+            if name == "ready_start" and line:
+                self.ready_history.append(line[:300])
+                if "[FAIL]" in line:
+                    failure = line.split("[FAIL]", 1)[1].strip()
+                    if failure and failure not in self.ready_failures:
+                        self.ready_failures.append(failure[:240])
         if line:
             LOG.info("%s: %s", name, line)
 
@@ -197,6 +225,8 @@ class Bridge:
                         self.job_status = dict(job)
                 if name == "ready_start":
                     self.ready_state = "READY" if code == 0 else "FAILED"
+                    if code == 0:
+                        self.ready_failures.clear()
                 elif name == "ready_stop":
                     self.ready_stopping = False
                     if code == 0:
@@ -355,8 +385,29 @@ class Bridge:
             elif command == "route":
                 extra = self._route_frame()
                 response.update(ok=True, detail="route loaded")
+            elif command in ("lidar_test_start", "lidar_test_stop"):
+                if command == "lidar_test_start":
+                    with self.lock:
+                        if (self._running("ready_start") or self._running("drive")
+                                or self._running("ready_stop") or
+                                self.ready_state in ("READY", "STARTING", "STOPPING")):
+                            raise RuntimeError("READY/DRIVE is active; end it before LiDAR testing")
+                        if self._running("lidar_test_start") or self._running("lidar_test_stop"):
+                            raise RuntimeError("LiDAR test command already running")
+                    if (self.lidar_test_state / "active").exists():
+                        raise RuntimeError("LiDAR test already running")
+                    response.update(self._run_job("lidar_test_start", ["pid_lidar_test.sh", "start"]))
+                else:
+                    if self._running("lidar_test_start"):
+                        raise RuntimeError("LiDAR test still starting")
+                    response.update(self._run_job("lidar_test_stop", ["pid_lidar_test.sh", "stop"]))
             elif command in ("ready_start", "stack_start"):
+                if (self.lidar_test_state / "active").exists():
+                    raise RuntimeError("LiDAR test active. Press Test End before READY")
                 with self.lock:
+                    self.ready_history.clear()
+                    self.ready_failures.clear()
+                    self.ready_run_id += 1
                     if self._running("ready_start"):
                         raise RuntimeError("READY already starting")
                     if self._running("drive"):
@@ -382,6 +433,8 @@ class Bridge:
                 response.update(ok=True, detail="Current telemetry follows")
                 extra = self.telemetry()
             elif command == "drive_start":
+                if (self.lidar_test_state / "active").exists():
+                    raise RuntimeError("LiDAR test active. End test before driving")
                 name = payload.get("route", self.selected_route)
                 if name not in ROUTES:
                     raise ValueError("Invalid route")
@@ -522,11 +575,18 @@ class Bridge:
 
         while True:
             try:
+                # Avoid binding rospy to the temporary LiDAR-test ROS graph.
+                if (self.lidar_test_state / "active").exists():
+                    time.sleep(2)
+                    continue
                 uri = os.environ.get("ROS_MASTER_URI", "http://127.0.0.1:11311")
                 from urllib.parse import urlparse
                 dest = urlparse(uri)
                 with socket.create_connection((dest.hostname, dest.port or 11311), timeout=1):
                     pass
+                if (self.lidar_test_state / "active").exists():
+                    time.sleep(2)
+                    continue
                 rospy.init_node("pid_bt_bridge", anonymous=False, disable_signals=True)
                 rospy.Subscriber("/pid_safety/status", String,
                                  lambda msg: self._json_cb("safety", msg), queue_size=2)
@@ -596,7 +656,11 @@ class Bridge:
                         "UART Diagnostics": health("uart", 2.5),
                     },
                     "jobs": {k: dict(v) for k, v in self.job_states.items()},
+                    "failures": list(self.ready_failures),
+                    "history": list(self.ready_history),
+                    "run_id": self.ready_run_id,
                 },
+                "lidar_test": self._lidar_test(),
                 "selected_route": self.selected_route,
                 "active_route": self.active_route,
                 "drive_state": (drive or {}).get("state", "UNKNOWN"),
