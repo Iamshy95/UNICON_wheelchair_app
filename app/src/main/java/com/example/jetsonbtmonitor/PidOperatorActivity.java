@@ -72,6 +72,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
     private TextView lidarTestStatus, lidarTestDetail;
     private Button lidarTestStart, lidarTestStop;
     private String lidarTestPhase = "STOPPED";
+    private boolean lidarTestWasRunning = false;
     private String readyPhase = "UNKNOWN";
     private TextView driveNote, safetyState, safetyReason, currentRoute, wheelModeText;
     private Spinner routeSpinner;
@@ -635,10 +636,13 @@ public final class PidOperatorActivity extends AppCompatActivity {
         if (test == null) return;
         String state = test.optString("state", "STOPPED");
         lidarTestPhase = state;
+        if (!"STOPPED".equals(state)) lidarTestWasRunning = true;
         if ("STOPPED".equals(state)) {
             lidarTestStatus.setText("테스트 미실행");
             lidarTestStatus.setTextColor(MUTED);
-            lidarTestDetail.setText("테스트 종료 후 READY를 실행하세요.");
+            lidarTestDetail.setText(lidarTestWasRunning
+                    ? "테스트 종료 후 READY를 실행하세요."
+                    : "READY 전에 LiDAR 연결 상태를 점검할 수 있습니다.");
             return;
         }
         boolean lidarOk = "OK".equals(test.optString("lidar"));
