@@ -666,7 +666,7 @@ class Bridge:
                     },
                     "jobs": {k: dict(v) for k, v in self.job_states.items()},
                     "failures": list(self.ready_failures),
-                    "history": list(self.ready_history),
+                    "history": list(self.ready_history)[-24:],
                     "run_id": self.ready_run_id,
                 },
                 "lidar_test": self._lidar_test(),
