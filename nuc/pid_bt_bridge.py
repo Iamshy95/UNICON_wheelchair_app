@@ -49,6 +49,7 @@ class Bridge:
         self.drive_accepted = False
         self.drive_confirmed = False
         self.drive_rejection_sent = False
+        self.drive_terminal_reason = None  # GOAL_REACHED / MANUAL_INTERVENTION / unexpected exit
         self.ready_stopping = False
         self.stop_alarm = None
         self._pose_transform_cache = {}
@@ -137,6 +138,26 @@ class Bridge:
                 elif obj.get("status") == "REJECTED":
                     self._reject_drive(obj.get("reason", "SCRIPT_CHECK_FAILED"),
                                        obj.get("message", "주행 시작이 거부되었습니다."))
+                elif obj.get("status") in ("GOAL_REACHED", "MANUAL_INTERVENTION"):
+                    self._mark_drive_interrupted(obj["status"])
+
+    def _mark_drive_interrupted(self, reason):
+        """Latch a completed goal or manual intervention until explicit DRIVE STOP.
+
+        Controller ROS messages may vanish when the node exits. A latched
+        phase prevents the UI from treating an exited DRIVE process as IDLE.
+        """
+        with self.lock:
+            if self.drive_phase in ("STOPPING", "STOPPED", "STOP_UNVERIFIED"):
+                return
+            if not self.drive_confirmed:
+                return
+            if reason == "GOAL_REACHED":
+                self.drive_terminal_reason = reason
+                self.drive_phase = "GOAL_ARRIVED"
+            elif reason == "MANUAL_INTERVENTION" and self.drive_terminal_reason != "GOAL_REACHED":
+                self.drive_terminal_reason = reason
+                self.drive_phase = "NEEDS_STOP"
 
     def _confirm_drive(self, drive, received_at):
         """Only a fresh ROS RUNNING status may confirm actual start."""
@@ -239,21 +260,31 @@ class Bridge:
                     if code == 0:
                         self.ready_state = "STOPPED"
                 elif name == "drive":
-                    if self.drive_phase not in ("STOPPING", "STOPPED"):
+                    if self.drive_phase not in ("STOPPING", "STOPPED", "STOP_UNVERIFIED"):
                         if not self.drive_confirmed:
                             self._reject_drive("SCRIPT_FAILED",
                                                (job or {}).get("detail", "DRIVE script exited"))
+                        elif self.drive_terminal_reason == "GOAL_REACHED":
+                            self.drive_phase = "GOAL_ARRIVED"
                         else:
-                            self.drive_phase = "FINISHED"
-                    self.active_route = None
+                            # Manual intervention or unexpected controller exit:
+                            # an explicit STOP verification is still required.
+                            self.drive_phase = "NEEDS_STOP"
+                            self.drive_terminal_reason = (
+                                self.drive_terminal_reason or "DRIVE_EXITED")
+                    # Do not clear active_route on exit: the operator must
+                    # acknowledge and verify the end of this driving session.
                 elif name == "drive_stop":
                     if code == 0:
                         self.drive_phase = "STOPPED"
                         self.active_route = None
+                        self.drive_terminal_reason = None
+                        self.drive_confirmed = False
                         self._emit({"type": "drive_result", "status": "STOPPED",
                                     "reason": "STOP_VERIFIED",
                                     "message": "MANUAL 및 정차 확인 완료"})
                     else:
+                        self.drive_phase = "STOP_UNVERIFIED"
                         self._emit({"type": "drive_result", "status": "STOP_UNVERIFIED",
                                     "reason": "STOP_SCRIPT_FAILED",
                                     "message": "실제 정지를 확인하지 못했습니다.",
@@ -292,7 +323,7 @@ class Bridge:
         try:
             with self.lock:
                 active = (self._running("drive") or self._running("drive_stop")
-                          or self.drive_phase in ("RUNNING", "START_REQUEST_ACCEPTED", "STOPPING"))
+                          or self.drive_phase in ("RUNNING", "START_REQUEST_ACCEPTED", "STOPPING", "GOAL_ARRIVED", "NEEDS_STOP", "STOP_UNVERIFIED"))
             if active:
                 with self.lock:
                     self.drive_phase = "STOPPING"
@@ -382,7 +413,7 @@ class Bridge:
                 if name not in ROUTES:
                     raise ValueError("Invalid route")
                 with self.lock:
-                    if self._running("drive") or self.drive_phase in ("RUNNING", "CHECKING", "START_REQUEST_ACCEPTED", "STOPPING"):
+                    if self._running("drive") or self.drive_phase in ("RUNNING", "CHECKING", "START_REQUEST_ACCEPTED", "STOPPING", "GOAL_ARRIVED", "NEEDS_STOP", "STOP_UNVERIFIED"):
                         raise RuntimeError("Cannot change route while DRIVE is active")
                     if self.selected_route != name:
                         self.latest.pop("pose", None)
@@ -453,8 +484,10 @@ class Bridge:
                     if self.estop_latched:
                         raise RuntimeError("E-STOP latched; release separately")
                     if (self._running("drive") or self._running("drive_stop")
-                            or self.drive_phase in ("CHECKING", "START_REQUEST_ACCEPTED", "RUNNING", "STOPPING")):
-                        raise RuntimeError("DRIVE already running or stopping")
+                            or self.drive_phase in ("CHECKING", "START_REQUEST_ACCEPTED", "RUNNING",
+                                                    "STOPPING", "GOAL_ARRIVED", "NEEDS_STOP",
+                                                    "STOP_UNVERIFIED")):
+                        raise RuntimeError("Previous DRIVE session must be stopped and verified before restarting")
                     if self._running("ready_start"):
                         raise RuntimeError("READY still starting")
                     if self.selected_route != name:
@@ -469,6 +502,7 @@ class Bridge:
                     self.drive_accepted = False
                     self.drive_confirmed = False
                     self.drive_rejection_sent = False
+                    self.drive_terminal_reason = None
                     self.last_preflight = None
                     self.last_drive_event = None
                 try:
@@ -483,9 +517,9 @@ class Bridge:
                 with self.lock:
                     if command == "estop":
                         self.estop_latched = True
-                    self.drive_phase = "STOPPING"
                     if self._running("drive_stop"):
                         raise RuntimeError("Stop already in progress")
+                    self.drive_phase = "STOPPING"
                 # Abort any still-running preflight/START shell first, to avoid
                 # it switching MANUAL back to AUTO after the stop check finishes.
                 self._cancel_drive_launch()
@@ -515,6 +549,9 @@ class Bridge:
                 self._store(key, value)
                 if key == "drive":
                     self._confirm_drive(value, stamp)
+                    state = value.get("state")
+                    if state in ("GOAL_REACHED", "MANUAL_INTERVENTION"):
+                        self._mark_drive_interrupted(state)
         except (ValueError, TypeError):
             LOG.warning("Invalid %s JSON", key)
 
@@ -715,6 +752,7 @@ class Bridge:
                 "active_route": self.active_route,
                 "drive_state": (drive or {}).get("state", "UNKNOWN"),
                 "drive_phase": phase,
+                "drive_terminal_reason": self.drive_terminal_reason,
                 "drive_confirmed": self.drive_confirmed,
                 "drive": drive, "last_preflight": self.last_preflight,
                 "last_drive_event": self.last_drive_event,
