@@ -86,6 +86,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
     private String currentDrivePhase = "IDLE";
     private boolean driveConfirmed = false;
     private boolean stopPending = false;
+    private String wheelMode = "UNKNOWN";
     private boolean routeSpinnerUpdating = false;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final Runnable freshnessTick = new Runnable() {
@@ -433,9 +434,15 @@ public final class PidOperatorActivity extends AppCompatActivity {
         }
         connect.setEnabled(!connected);
         boolean active = Arrays.asList("CHECKING", "START_REQUEST_ACCEPTED",
-                "RUNNING", "STOPPING", "STATUS_STALE").contains(currentDrivePhase);
-        driveStart.setEnabled(link && !active && !testActive);
-        driveStop.setEnabled(link && active && !"STOPPING".equals(currentDrivePhase));
+                "RUNNING", "STOPPING", "STATUS_STALE", "GOAL_ARRIVED",
+                "NEEDS_STOP", "STOP_UNVERIFIED").contains(currentDrivePhase);
+        boolean startReady = "READY".equals(readyPhase) && "MANUAL".equals(wheelMode);
+        driveStart.setEnabled(link && !active && !testActive && startReady);
+        // At the goal, or after manual intervention, explicit STOP must still be possible.
+        driveStop.setEnabled(link && !testActive &&
+                Arrays.asList("CHECKING", "START_REQUEST_ACCEPTED", "RUNNING",
+                        "STATUS_STALE", "GOAL_ARRIVED", "NEEDS_STOP",
+                        "STOP_UNVERIFIED").contains(currentDrivePhase));
     }
 
     private void connectNuc() {
@@ -548,8 +555,8 @@ public final class PidOperatorActivity extends AppCompatActivity {
                     driveNote.setText("주행 종료 완료 · READY는 유지됩니다.");
                     showUnknownSafety("주행이 종료되었습니다.");
                 } else if ("STOP_UNVERIFIED".equals(state)) {
-                    currentDrivePhase = "STATUS_STALE";
-                    driveNote.setText("정지 확인 실패 · 조이스틱으로 안전을 확보하세요.");
+                    currentDrivePhase = "STOP_UNVERIFIED";
+                    driveNote.setText("정지 확인 실패 · 조이스틱으로 안전을 확보하고 정지 상태를 재확인하세요.");
                     showUnknownSafety("정지를 확인할 수 없습니다.");
                 }
             } else if ("job_result".equals(type)) {
@@ -582,14 +589,14 @@ public final class PidOperatorActivity extends AppCompatActivity {
                     readyNote.setText(message + "\n" + f.optString("detail", ""));
                 }
                 if ("drive_stop".equals(name) && !f.optBoolean("ok")) {
-                    currentDrivePhase = "STATUS_STALE";
+                    currentDrivePhase = "STOP_UNVERIFIED";
                     showUnknownSafety("주행 종료가 확인되지 않았습니다.");
                 }
             } else if ("ack".equals(type)) {
                 if (!f.optBoolean("ok", false)) {
                     String cmd = f.optString("command");
                     if ("drive_start".equals(cmd)) currentDrivePhase = "REJECTED";
-                    if ("drive_stop".equals(cmd)) currentDrivePhase = "STATUS_STALE";
+                    if ("drive_stop".equals(cmd)) currentDrivePhase = "STOP_UNVERIFIED";
                     String detail = f.optString("detail");
                     if (cmd.startsWith("lidar_test_")) {
                         lidarTestLastError = detail;
@@ -781,6 +788,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
         }
         JSONObject wheel = f.optJSONObject("wheel");
         String mode = wheel == null ? "UNKNOWN" : wheel.optString("mode_name", "UNKNOWN");
+        wheelMode = mode;
         if ("MANUAL".equals(mode)) {
             wheelModeText.setText("현재 모드: 수동 조작 모드 (조종간)");
             wheelModeText.setTextColor(AMBER);
@@ -796,6 +804,13 @@ public final class PidOperatorActivity extends AppCompatActivity {
         String phase = f.optString("drive_phase", "UNKNOWN");
         currentDrivePhase = phase;
         driveConfirmed = f.optBoolean("drive_confirmed", false);
+        if ("GOAL_ARRIVED".equals(phase)) {
+            driveNote.setText("목적지에 도착했습니다. 정차 후 [주행 종료]를 눌러 세션을 마무리하세요.");
+        } else if ("NEEDS_STOP".equals(phase)) {
+            driveNote.setText("수동 개입 또는 주행 프로세스 종료 · [주행 종료]로 정차 상태를 확인하세요.");
+        } else if ("STOP_UNVERIFIED".equals(phase)) {
+            driveNote.setText("정지 확인 실패 · 실제 바퀴 정지와 수동 모드를 확인한 뒤 [주행 종료]를 다시 누르세요.");
+        }
         JSONObject safety = f.optJSONObject("safety");
         if (driveConfirmed && ("RUNNING".equals(phase) || "STATUS_STALE".equals(phase))) {
             if (safety == null || "STATUS_STALE".equals(phase)) {
