@@ -140,6 +140,24 @@ class Bridge:
                                        obj.get("message", "주행 시작이 거부되었습니다."))
                 elif obj.get("status") in ("GOAL_REACHED", "MANUAL_INTERVENTION"):
                     self._mark_drive_interrupted(obj["status"])
+                elif obj.get("status") == "STOP_VERIFIED":
+                    # A terminal Ctrl+C or external pid_stop.sh completed
+                    # physical STOP; no additional app acknowledgement needed.
+                    # A goal arrival alone remains pending operator completion.
+                    if self.drive_terminal_reason != "GOAL_REACHED" and self.drive_phase != "STOPPING":
+                        self.drive_phase = "STOPPED"
+                        self.active_route = None
+                        self.drive_confirmed = False
+                        self.drive_terminal_reason = None
+                        self._emit({"type": "drive_result", "status": "STOPPED",
+                                    "reason": "TERMINAL_STOP_VERIFIED",
+                                    "message": "터미널 주행 종료 및 MANUAL 정차 확인 완료"})
+                elif obj.get("status") == "STOP_UNVERIFIED":
+                    if self.drive_phase != "STOPPING":
+                        self.drive_phase = "STOP_UNVERIFIED"
+                        self._emit({"type": "drive_result", "status": "STOP_UNVERIFIED",
+                                    "reason": "TERMINAL_STOP_FAILED",
+                                    "message": "터미널 주행 종료 확인 실패"})
 
     def _mark_drive_interrupted(self, reason):
         """Latch a completed goal or manual intervention until explicit DRIVE STOP.
