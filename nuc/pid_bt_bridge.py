@@ -337,7 +337,14 @@ class Bridge:
                             "exit_code": stopped.returncode,
                             "detail": stopped.stdout[-1200:]})
                 if stopped.returncode != 0:
+                    with self.lock:
+                        self.drive_phase = "STOP_UNVERIFIED"
                     raise RuntimeError("주행 정지가 확인되지 않아 READY 종료를 취소했습니다.")
+                with self.lock:
+                    self.drive_phase = "STOPPED"
+                    self.drive_terminal_reason = None
+                    self.drive_confirmed = False
+                    self.active_route = None
             self._run_job("ready_stop", ["pid_ready.sh", "stop"])
         except Exception as exc:
             LOG.warning("READY stop refused: %s", exc)
@@ -525,7 +532,12 @@ class Bridge:
                 self._cancel_drive_launch()
                 # pid_stop.sh requests MANUAL, controller pause and verifies wheels.
                 # Run immediately without waiting for the DRIVE watch process.
-                response.update(self._run_job("drive_stop", ["pid_stop.sh"]))
+                try:
+                    response.update(self._run_job("drive_stop", ["pid_stop.sh"]))
+                except Exception:
+                    with self.lock:
+                        self.drive_phase = "STOP_UNVERIFIED"
+                    raise
             elif command == "estop_release":
                 with self.lock:
                     self.estop_latched = False
