@@ -489,13 +489,18 @@ class Bridge:
                         self._running("lidar_test_start") or self._running("lidar_test_stop")):
                     raise RuntimeError("LiDAR test active. Press Test End before READY")
                 with self.lock:
+                    # Never launch READY while shutdown or drive-stop is tearing
+                    # down the same ROS / wheel stack.
+                    if self.ready_stopping or self._running("ready_stop"):
+                        raise RuntimeError("READY shutdown in progress")
+                    if self._running("ready_start"):
+                        raise RuntimeError("READY already starting")
+                    if self._running("drive") or self._running("drive_stop"):
+                        raise RuntimeError("DRIVE session or stop is still active")
+                    # Reject before resetting diagnostics from the active run.
                     self.ready_history.clear()
                     self.ready_failures.clear()
                     self.ready_run_id += 1
-                    if self._running("ready_start"):
-                        raise RuntimeError("READY already starting")
-                    if self._running("drive"):
-                        raise RuntimeError("DRIVE is active")
                     self.ready_state = "STARTING"
                 response.update(self._run_job("ready_start",
                                              ["pid_ready.sh", "start"]))
