@@ -581,7 +581,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
                     driveConfirmed = false;
                     JSONObject pf = f.optJSONObject("preflight");
                     if (pf != null && !pf.optBoolean("ok", true)) renderPreflight(pf);
-                    else driveNote.setText("출발 거부: " + f.optString("message", f.optString("reason")));
+                    else driveNote.setText("출발 거부: " + koreanIssue(f.optString("message", f.optString("reason"))));
                     showUnknownSafety("출발하지 않았습니다.");
                 } else if ("STARTED".equals(state) && "ROS_RUNNING".equals(f.optString("reason"))) {
                     currentDrivePhase = "RUNNING";
@@ -600,7 +600,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 }
             } else if ("job_result".equals(type)) {
                 String name = f.optString("job");
-                String message = (f.optBoolean("ok") ? "완료: " : "실패: ") + name;
+                String message = (f.optBoolean("ok") ? "완료: " : "실패: ") + koreanJob(name);
                 if ("lidar_test_start".equals(name)) {
                     if (!f.optBoolean("ok", false)) {
                         lidarTestPhase = "STOPPED";
@@ -625,7 +625,8 @@ public final class PidOperatorActivity extends AppCompatActivity {
                         readyNote.setTextColor(RED);
                     }
                 } else if ("ready_stop".equals(name)) {
-                    readyNote.setText(message + "\n" + f.optString("detail", ""));
+                    readyNote.setText((f.optBoolean("ok") ? "READY 종료 완료" : "READY 종료 실패")
+                            + "\n" + koreanIssue(f.optString("detail", "")));
                 }
                 if ("drive_stop".equals(name) && !f.optBoolean("ok")) {
                     currentDrivePhase = "STOP_UNVERIFIED";
@@ -641,18 +642,18 @@ public final class PidOperatorActivity extends AppCompatActivity {
                         lidarTestLastError = detail;
                         lidarTestStatus.setText("테스트 명령 거부");
                         lidarTestStatus.setTextColor(RED);
-                        lidarTestDetail.setText(detail);
+                        lidarTestDetail.setText(koreanIssue(detail));
                     } else if (cmd.startsWith("ready_")) {
-                        readyNote.setText("READY 요청 거부: " + detail);
+                        readyNote.setText("READY 요청 거부: " + koreanIssue(detail));
                         readyNote.setTextColor(RED);
                     } else {
-                        driveNote.setText("명령 거부: " + detail);
+                        driveNote.setText("명령 거부: " + koreanIssue(detail));
                     }
                 }
             }
             updateControls();
         } catch (Exception ex) {
-            readyNote.setText("NUC 메시지 처리 오류: " + ex.getMessage());
+            readyNote.setText("NUC 메시지 처리 오류 · 통신 상태 및 상세 로그를 확인하세요.");
         }
     }
 
@@ -746,6 +747,85 @@ public final class PidOperatorActivity extends AppCompatActivity {
         }
     }
 
+    private static String koreanIssue(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return "NUC에서 상세 오류가 전달되지 않았습니다.";
+        String[][] rules = {
+            {"READY startup/shutdown is in progress", "READY 시작 또는 종료 중입니다."},
+            {"DRIVE session must be ended and verified", "기존 주행을 종료하고 실제 정차를 확인하세요."},
+            {"READY startup is still running", "READY 시작이 완료된 뒤 다시 시도하세요."},
+            {"DRIVE components remain active", "주행 프로세스가 남아 있습니다. 주행 종료를 먼저 실행하세요."},
+            {"READY cleanup did not finish", "기존 READY 종료에 실패했습니다. NUC 실행 기록을 확인하세요."},
+            {"Existing Livox process detected", "Livox 드라이버가 남아 있어 중복 실행을 차단했습니다."},
+            {"ROS Master already exists", "기존 ROS Master가 남아 있어 테스트를 시작하지 않았습니다."},
+            {"LiDAR test is already active", "LiDAR 테스트가 이미 실행 중입니다."},
+            {"LiDAR test command already running", "LiDAR 테스트 명령을 처리 중입니다."},
+            {"LiDAR test still starting", "LiDAR 테스트가 아직 시작 중입니다."},
+            {"ROS Master did not start", "테스트용 ROS Master 실행에 실패했습니다."},
+            {"Livox driver exited early", "Livox 드라이버가 시작 직후 종료됐습니다."},
+            {"LiDAR monitor exited early", "LiDAR 수신 모니터가 시작 직후 종료됐습니다."},
+            {"LiDAR test cleanup incomplete", "테스트 프로세스 정리가 완료되지 않았습니다. READY 시작을 중단하세요."},
+            {"LiDAR test startup failed", "LiDAR 테스트 시작에 실패했습니다."},
+            {"READY shutdown already requested", "READY 종료 중입니다."},
+            {"READY already starting", "READY가 이미 시작 중입니다."},
+            {"READY shutdown in progress", "READY 종료 작업이 진행 중입니다."},
+            {"READY startup or DRIVE stop still in progress", "READY 시작 또는 주행 종료 작업이 진행 중입니다."},
+            {"Previous DRIVE session must be stopped", "기존 주행 종료와 정차 확인이 먼저 필요합니다."},
+            {"Cannot change route while DRIVE is active", "주행 종료 전에는 경로를 바꿀 수 없습니다."},
+            {"LiDAR test active", "LiDAR 테스트를 먼저 종료하세요."},
+            {"E-STOP latched", "소프트웨어 비상정지가 유지 중입니다. 별도 해제가 필요합니다."},
+            {"Invalid route", "선택한 경로가 올바르지 않습니다."},
+            {"POSE_NOT_ALIGNED", "현재 위치 또는 진행 방향이 경로와 맞지 않습니다."},
+            {"POSE_UNAVAILABLE", "최신 지도 위치를 수신하지 못했습니다."},
+            {"POSE_INVALID", "현재 위치 데이터가 올바르지 않습니다."},
+            {"pose frame is not map", "위치 데이터의 좌표계가 올바르지 않습니다."},
+            {"pose timestamp not fresh", "위치 데이터 갱신이 지연되고 있습니다."},
+            {"NO_POSE", "위치 데이터를 수신하지 못했습니다."},
+            {"NO_TRACKING", "위치추정 추적 상태가 정상적이지 않습니다."},
+            {"SAFETY_POLICY_STALE", "Safety 주행 정책이 갱신되지 않았습니다."},
+            {"WHEEL_STALE", "바퀴 상태 정보 수신이 지연되고 있습니다."},
+            {"OUTSIDE_SAFE_ROUTE", "휠체어가 주행 허용 영역 밖에 있습니다."},
+            {"NOT_AUTO_MODE", "자율주행 모드가 확인되지 않았습니다."},
+            {"SCRIPT_FAILED", "주행 스크립트 실행에 실패했습니다."},
+            {"competing publishers", "다른 속도 명령 발행자가 있습니다. 중복 제어를 차단했습니다."},
+            {"Livox lidar silent", "LiDAR 데이터가 수신되지 않았습니다."},
+            {"Livox built-in IMU silent", "LiDAR 내장 IMU 데이터가 수신되지 않았습니다."},
+            {"FAST-LIO Odometry silent", "FAST-LIO 위치 데이터가 수신되지 않았습니다."},
+            {"fusion object summary silent", "장애물 인식 결과가 수신되지 않았습니다."},
+            {"wheel_status silent", "바퀴 상태 데이터가 수신되지 않았습니다."},
+            {"ready health check failed", "READY 최종 검사에 실패했습니다."},
+            {"GICP did not reach verified TRACKING", "GICP 위치추정 안정화에 실패했습니다."},
+            {"ROS Master not reachable", "ROS Master와 연결할 수 없습니다."},
+            {"REFUSED", "제어기가 실행 요청을 거부했습니다."}
+        };
+        for (String[] rule : rules) if (raw.contains(rule[0])) return rule[1];
+        String converted = explainReadyIssue(raw);
+        if (converted.matches(".*[가-힣].*")) return converted
+                .replace("[FAIL]", "실패:").replace("[ERROR]", "오류:")
+                .replace("[WARN]", "주의:");
+        return "기술 오류가 발생했습니다. NUC 상세 실행 기록을 확인하세요.";
+    }
+
+    private static String readyLogLine(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return "";
+        if (raw.contains("[FAIL]") || raw.contains("[ERROR]"))
+            return "실패 · " + koreanIssue(raw);
+        if (raw.contains("ROS Master") && raw.contains("[OK]")) return "정상 · ROS Master 실행";
+        if (raw.contains("Livox") && raw.contains("[OK]")) return "정상 · LiDAR 또는 IMU 연결";
+        if (raw.contains("FAST-LIO") && raw.contains("[OK]")) return "정상 · FAST-LIO 위치추정";
+        if (raw.contains("GICP") && raw.contains("[OK]")) return "정상 · GICP 위치추정";
+        if (raw.contains("perception") && raw.contains("[OK]")) return "정상 · 장애물 인식";
+        if (raw.contains("UART") && raw.contains("[OK]")) return "정상 · UART 및 구동계";
+        if (raw.contains("watchdog") && raw.contains("[OK]")) return "정상 · 정지 감시";
+        if (raw.contains("READY START completed") || raw.contains("SYSTEM READY"))
+            return "READY 준비 완료";
+        if (raw.contains("[WAIT]")) return "위치추정 또는 센서 안정화 대기 중";
+        if (raw.contains("ROS bag")) return "ROS bag 기록 관리";
+        if (raw.contains("[OK]")) return "구성요소 검사 통과";
+        if (raw.contains("[WARN]")) return "주의 · " + koreanIssue(raw);
+        if (raw.contains("[INFO]")) return "진행 · " + koreanIssue(raw);
+        return "시스템 진행 단계 · 상세 내용은 NUC 실행 기록을 확인하세요.";
+    }
+
     private static String explainReadyIssue(String raw) {
         // Keep unknown diagnostics readable instead of hiding them.
         return raw.replace("Livox lidar silent", "LiDAR 데이터 수신 실패")
@@ -834,11 +914,12 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 for (String job : new String[]{"ready_start", "ready_status", "ready_stop"}) {
                     JSONObject info = jobs.optJSONObject(job);
                     if (info != null) {
-                        log.append(job).append(" · ").append(info.optString("state"))
+                        log.append(koreanJob(job)).append(" · ")
+                                .append(koreanState(info.optString("state", "UNKNOWN")))
                                 .append("\n");
                         JSONArray tail = info.optJSONArray("tail");
                         if (tail != null && tail.length() > 0) {
-                            log.append(tail.optString(tail.length() - 1)).append("\n");
+                            log.append(readyLogLine(tail.optString(tail.length() - 1))).append("\n");
                         }
                     }
                 }
@@ -847,8 +928,13 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 JSONArray history = ready.optJSONArray("history");
                 if (history != null) {
                     log.setLength(0);
+                    String lastLine = "";
                     for (int i = 0; i < history.length(); i++) {
-                        log.append(history.optString(i)).append("\n");
+                        String nextLine = readyLogLine(history.optString(i));
+                        if (!nextLine.isEmpty() && !nextLine.equals(lastLine)) {
+                            log.append(nextLine).append("\n");
+                            lastLine = nextLine;
+                        }
                     }
                 }
                 readyLogs.setText(log.toString().trim());
@@ -859,7 +945,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 if (failures != null && failures.length() > 0) {
                     problems.append("\n실패 원인:");
                     for (int i = 0; i < failures.length(); i++) {
-                        problems.append("\n• ").append(explainReadyIssue(failures.optString(i)));
+                        problems.append("\n• ").append(koreanIssue(failures.optString(i)));
                     }
                 } else {
                     problems.append("\n실패한 단계를 실행 기록에서 확인하세요.");
