@@ -735,6 +735,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
             case "GOAL_APPROACH": return "목적지 접근으로 감속 중";
             case "CTE_LIMIT": return "경로 이탈 오차로 감속 중";
             case "CURVATURE_LIMIT": return "곡선 구간으로 감속 중";
+            case "BUMP_LIMIT": return "과속방지턱 주의 · 감속 중";
             case "MASK_BOUNDARY": return "주행 허용 영역 경계 접근";
             case "POSE_MISSING": return "현재 위치를 확인할 수 없음";
             case "POSE_STALE": return "위치 데이터 갱신 지연";
