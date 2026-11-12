@@ -312,7 +312,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
         });
         LinearLayout lidarCard = card(adminScreen);
         add(lidarCard, text("LiDAR 연결 테스트", 18, INK, true), 0);
-        add(lidarCard, text("ROS Master와 Livox 드라이버만 실행합니다. 선 연결을 점검하는 동안 계속 감시합니다.", 13, MUTED, false), 7);
+        add(lidarCard, text("기존 READY를 안전하게 종료한 후 테스트 전용 센서를 실행합니다. 테스트 종료 시 전체 테스트를 정리합니다.", 13, MUTED, false), 7);
         lidarTestStatus = text("테스트 미실행", 17, MUTED, true);
         add(lidarCard, lidarTestStatus, 11);
         String[] sensorNames = {"ROS Master", "Livox 드라이버", "LiDAR", "IMU"};
@@ -484,7 +484,8 @@ public final class PidOperatorActivity extends AppCompatActivity {
         if (lidarTestStart != null) {
             lidarTestStart.setEnabled(link && !testActive &&
                     !"STARTING".equals(readyPhase) && !"STOPPING".equals(readyPhase));
-            lidarTestStop.setEnabled(link && testActive);
+            lidarTestStop.setEnabled(link && testActive &&
+                    !"STARTING".equals(lidarTestPhase) && !"STOPPING".equals(lidarTestPhase));
         }
         connect.setEnabled(!connected);
         boolean active = Arrays.asList("CHECKING", "START_REQUEST_ACCEPTED",
@@ -659,7 +660,8 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 if (!f.optBoolean("ok", false)) {
                     String cmd = f.optString("command");
                     if ("drive_start".equals(cmd)) currentDrivePhase = "REJECTED";
-                    if ("ready_start".equals(cmd) || "ready_stop".equals(cmd)) readyPhase = "FAILED";
+                    if ("ready_start".equals(cmd)) readyPhase = "FAILED";
+                    if ("ready_stop".equals(cmd)) readyPhase = "FAILED";
                     if ("drive_stop".equals(cmd)) currentDrivePhase = "STOP_UNVERIFIED";
                     String detail = f.optString("detail");
                     if (cmd.startsWith("lidar_test_")) {
@@ -924,6 +926,18 @@ public final class PidOperatorActivity extends AppCompatActivity {
     private void renderTelemetry(JSONObject f) {
         renderLidarTest(f.optJSONObject("lidar_test"));
         JSONObject ready = f.optJSONObject("ready");
+        if (ready != null && "STARTING".equals(lidarTestPhase)) {
+            JSONObject jobsForTest = ready.optJSONObject("jobs");
+            JSONObject testJob = jobsForTest == null ? null : jobsForTest.optJSONObject("lidar_test_start");
+            if (testJob != null) {
+                String step = testJob.optString("detail", "");
+                if (step.contains("[STEP]")) {
+                    lidarTestDetail.setText(step.replace("[STEP]", "진행:"));
+                } else {
+                    lidarTestDetail.setText("기존 READY 정리 또는 테스트 환경을 준비하고 있습니다.");
+                }
+            }
+        }
         if (ready != null) {
             String state = ready.optString("state", "UNKNOWN");
             readyPhase = state;
