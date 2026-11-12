@@ -81,6 +81,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
             "장애물 인식", "GICP 제외 영역", "바퀴 상태", "UART 진단"
     };
     private TextView lidarTestStatus, lidarTestDetail;
+    private final TextView[] lidarTestValues = new TextView[4];
     private Button lidarTestStart, lidarTestStop;
     private String lidarTestPhase = "STOPPED";
     private boolean lidarTestWasRunning = false;
@@ -314,7 +315,21 @@ public final class PidOperatorActivity extends AppCompatActivity {
         add(lidarCard, text("ROS Master와 Livox 드라이버만 실행합니다. 선 연결을 점검하는 동안 계속 감시합니다.", 13, MUTED, false), 7);
         lidarTestStatus = text("테스트 미실행", 17, MUTED, true);
         add(lidarCard, lidarTestStatus, 11);
-        lidarTestDetail = text("라이다/IMU 데이터 수신 여부를 확인할 수 있습니다.", 14, MUTED, false);
+        String[] sensorNames = {"ROS Master", "Livox 드라이버", "LiDAR", "IMU"};
+        for (int i = 0; i < sensorNames.length; i++) {
+            LinearLayout sensorLine = new LinearLayout(this);
+            sensorLine.setOrientation(LinearLayout.HORIZONTAL);
+            sensorLine.setPadding(dp(9), dp(9), dp(9), dp(9));
+            LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, -2);
+            rowParams.topMargin = dp(4);
+            lidarCard.addView(sensorLine, rowParams);
+            sensorLine.setBackground(background(BG, 0));
+            TextView name = text(sensorNames[i], 14, INK, true);
+            sensorLine.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+            lidarTestValues[i] = text("미실행", 14, MUTED, true);
+            sensorLine.addView(lidarTestValues[i]);
+        }
+        lidarTestDetail = text("시작 버튼을 누르면 기존 READY를 정리하고 독립 테스트를 시작합니다.", 13, MUTED, false);
         lidarTestDetail.setLineSpacing(dp(4), 1f);
         add(lidarCard, lidarTestDetail, 9);
         LinearLayout lidarButtons = new LinearLayout(this);
@@ -607,14 +622,22 @@ public final class PidOperatorActivity extends AppCompatActivity {
                         lidarTestLastError = f.optString("detail", "실행 환경을 확인하세요.");
                         lidarTestStatus.setText("테스트 시작 실패");
                         lidarTestStatus.setTextColor(RED);
-                        lidarTestDetail.setText(lidarTestLastError);
+                        lidarTestDetail.setText(koreanIssue(lidarTestLastError));
                     }
                 } else if ("lidar_test_stop".equals(name)) {
                     if (!f.optBoolean("ok", false)) {
                         lidarTestLastError = f.optString("detail", "프로세스 상태 확인 필요");
                         lidarTestStatus.setText("테스트 종료 실패 · 프로세스 확인 필요");
                         lidarTestStatus.setTextColor(RED);
-                        lidarTestDetail.setText(lidarTestLastError);
+                        lidarTestDetail.setText(koreanIssue(lidarTestLastError));
+                    }
+                } else if ("drive".equals(name) && !f.optBoolean("ok", false)) {
+                    if (!"STOP_UNVERIFIED".equals(currentDrivePhase) &&
+                            !"GOAL_ARRIVED".equals(currentDrivePhase) &&
+                            !"STOPPED".equals(currentDrivePhase) &&
+                            !"REJECTED".equals(currentDrivePhase)) {
+                        currentDrivePhase = "REJECTED";
+                        driveNote.setText("주행 시작 실패 · " + koreanIssue(f.optString("detail", "")));
                     }
                 } else if ("ready_start".equals(name)) {
                     if (f.optBoolean("ok", false)) {
@@ -636,10 +659,12 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 if (!f.optBoolean("ok", false)) {
                     String cmd = f.optString("command");
                     if ("drive_start".equals(cmd)) currentDrivePhase = "REJECTED";
+                    if ("ready_start".equals(cmd) || "ready_stop".equals(cmd)) readyPhase = "FAILED";
                     if ("drive_stop".equals(cmd)) currentDrivePhase = "STOP_UNVERIFIED";
                     String detail = f.optString("detail");
                     if (cmd.startsWith("lidar_test_")) {
                         lidarTestLastError = detail;
+                        if ("lidar_test_start".equals(cmd)) lidarTestPhase = "STOPPED";
                         lidarTestStatus.setText("테스트 명령 거부");
                         lidarTestStatus.setTextColor(RED);
                         lidarTestDetail.setText(koreanIssue(detail));
@@ -857,10 +882,14 @@ public final class PidOperatorActivity extends AppCompatActivity {
             lidarTestLastError = null;
         }
         if ("STOPPED".equals(state)) {
+            for (TextView value : lidarTestValues) {
+                value.setText("미실행");
+                value.setTextColor(MUTED);
+            }
             if (lidarTestLastError != null) {
                 lidarTestStatus.setText("LiDAR 테스트 실행 오류");
                 lidarTestStatus.setTextColor(RED);
-                lidarTestDetail.setText(lidarTestLastError);
+                lidarTestDetail.setText(koreanIssue(lidarTestLastError));
             } else {
                 lidarTestStatus.setText("테스트 미실행");
                 lidarTestStatus.setTextColor(MUTED);
@@ -879,15 +908,17 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 lidarOk && imuOk ? "LiDAR · IMU 정상 수신 중" : "센서 데이터 수신 확인 중");
         lidarTestStatus.setTextColor(monitorStale ? RED :
                 live && lidarOk && imuOk ? GREEN : AMBER);
-        StringBuilder details = new StringBuilder();
-        details.append("ROS Master: ").append(koreanState(test.optString("master", "UNKNOWN")));
-        details.append("\nLivox 드라이버: ").append(koreanState(test.optString("driver", "UNKNOWN")));
-        details.append("\nLiDAR: ").append(koreanState(test.optString("lidar", "WAITING")));
-        details.append("\nIMU: ").append(koreanState(test.optString("imu", "WAITING")));
-
-        details.append("\n\n테스트는 자동 종료되지 않습니다. 연결을 점검한 뒤 [테스트 종료]를 누르세요.");
-        details.append("\n테스트 종료 후 READY를 실행하세요.");
-        lidarTestDetail.setText(details.toString());
+        String[] codes = {
+                test.optString("master", "UNKNOWN"), test.optString("driver", "UNKNOWN"),
+                test.optString("lidar", "WAITING"), test.optString("imu", "WAITING")
+        };
+        for (int i = 0; i < codes.length; i++) {
+            lidarTestValues[i].setText(koreanState(codes[i]));
+            lidarTestValues[i].setTextColor(statusColor(codes[i]));
+        }
+        lidarTestDetail.setText(monitorStale
+                ? "상태 모니터 갱신이 끊겼습니다. 연결과 NUC 로그를 확인하세요."
+                : "케이블을 움직이며 네 항목의 변화를 확인하세요. 종료는 [테스트 종료]를 눌러야 합니다. READY는 자동 재시작되지 않습니다.");
     }
 
     private void renderTelemetry(JSONObject f) {
