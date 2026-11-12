@@ -667,6 +667,66 @@ public final class PidOperatorActivity extends AppCompatActivity {
         currentDrivePhase = "REJECTED";
     }
 
+    private static String koreanJob(String name) {
+        switch (name) {
+            case "ready_start": return "READY 시작";
+            case "ready_stop": return "READY 종료";
+            case "ready_status": return "READY 상태 확인";
+            case "lidar_test_start": return "LiDAR 테스트 시작";
+            case "lidar_test_stop": return "LiDAR 테스트 종료";
+            case "drive": return "주행 시작";
+            case "drive_stop": return "주행 종료";
+            default: return "시스템 작업";
+        }
+    }
+
+    private static int statusColor(String state) {
+        if ("OK".equals(state) || "RUNNING".equals(state) || "READY".equals(state))
+            return GREEN;
+        if ("FAILED".equals(state) || "STALE".equals(state) || "MONITOR_STALE".equals(state))
+            return RED;
+        if ("WAITING".equals(state) || "STARTING".equals(state) || "STOPPING".equals(state))
+            return AMBER;
+        return MUTED;
+    }
+
+    private static String safetyTitle(String raw) {
+        switch (raw) {
+            case "CLEAR": return "Safety · 정상 주행 가능";
+            case "SLOW": return "Safety · 감속 중";
+            case "STOP": return "Safety · 안전 정지";
+            default: return "Safety · 상태 확인 불가";
+        }
+    }
+
+    private static String safetyExplanation(String raw) {
+        switch (raw) {
+            case "NO_RESTRICTION": return "주행 제한 없음";
+            case "PATH_OBSTACLE": return "진행 경로에 장애물 감지";
+            case "VERY_CLOSE_OBJECT": return "휠체어에 매우 가까운 장애물 감지";
+            case "GOAL_APPROACH": return "목적지 접근으로 감속 중";
+            case "CTE_LIMIT": return "경로 이탈 오차로 감속 중";
+            case "CURVATURE_LIMIT": return "곡선 구간으로 감속 중";
+            case "MASK_BOUNDARY": return "주행 허용 영역 경계 접근";
+            case "POSE_MISSING": return "현재 위치를 확인할 수 없음";
+            case "POSE_STALE": return "위치 데이터 갱신 지연";
+            case "PERCEPTION_STALE": return "장애물 인식 데이터 수신 지연";
+            case "PERCEPTION_NOT_OK": return "장애물 인식 결과 이상";
+            case "PERCEPTION_SOURCE_STALE": return "장애물 인식 원본 데이터 지연";
+            case "BAD_OBJECT": return "장애물 데이터 형식 이상";
+            case "BAD_OBJECT_PROFILE": return "장애물 형상 정보 이상";
+            case "STATIC_REPLAN_EARLY": return "고정 장애물 감지 · 우회 경로 판단 중";
+            case "REPLAN_HOLD": return "우회 경로 처리 중 정지 유지";
+            case "RELEASE_CONFIRM": return "안전 상태 복귀 확인 중";
+            case "SAFETY_EXCEPTION": return "Safety 내부 오류";
+            case "RECEDING_IGNORED": return "멀어지는 장애물로 판단";
+            case "RECEDING_NEAR_SLOW": return "가까운 장애물로 감속 중";
+            case "TEST_CLEAR_BYPASS": return "시험 모드 · 장애물 보호 우회";
+            default: return raw == null || raw.isEmpty() ?
+                    "상세 사유 없음" : "알 수 없는 진단 코드 (" + raw + ") · 관리자 확인 필요";
+        }
+    }
+
     private static String koreanState(String raw) {
         switch (raw) {
             case "OK": return "정상 수신";
@@ -679,6 +739,9 @@ public final class PidOperatorActivity extends AppCompatActivity {
             case "STOPPED": return "종료됨";
             case "READY": return "준비 완료";
             case "WAITING": return "수신 대기 중";
+            case "SUCCEEDED": return "성공";
+            case "IDLE": return "대기";
+            case "MONITOR_STALE": return "상태 수신 중단";
             default: return raw;
         }
     }
@@ -741,8 +804,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
         details.append("\nLivox 드라이버: ").append(koreanState(test.optString("driver", "UNKNOWN")));
         details.append("\nLiDAR: ").append(koreanState(test.optString("lidar", "WAITING")));
         details.append("\nIMU: ").append(koreanState(test.optString("imu", "WAITING")));
-        details.append("\nLiDAR 수신 끊김: ").append(test.optInt("lidar_dropouts", 0)).append("회");
-        details.append("\nIMU 수신 끊김: ").append(test.optInt("imu_dropouts", 0)).append("회");
+
         details.append("\n\n테스트는 자동 종료되지 않습니다. 연결을 점검한 뒤 [테스트 종료]를 누르세요.");
         details.append("\n테스트 종료 후 READY를 실행하세요.");
         lidarTestDetail.setText(details.toString());
@@ -755,19 +817,16 @@ public final class PidOperatorActivity extends AppCompatActivity {
             String state = ready.optString("state", "UNKNOWN");
             readyPhase = state;
             readyState.setText("READY: " + koreanState(state));
-            readyState.setTextColor("READY".equals(state) ? GREEN :
-                    "FAILED".equals(state) ? RED : MUTED);
+            readyState.setTextColor(statusColor(state));
             JSONObject components = ready.optJSONObject("components");
             if (components != null) {
-                StringBuilder details = new StringBuilder();
-                String[] ordered = {"LiDAR", "IMU", "FAST-LIO", "Map Pose",
-                        "GICP Diagnostics", "Perception", "GICP Exclusions",
-                        "Wheel Status", "UART Diagnostics"};
-                for (String key : ordered) {
-                    String value = components.optString(key, "UNKNOWN");
-                    details.append(key).append(": ").append(koreanState(value)).append("\n");
+                for (int i = 0; i < COMPONENT_KEYS.length; i++) {
+                    String value = components.optString(COMPONENT_KEYS[i], "UNKNOWN");
+                    boolean active = "READY".equals(state) || "STARTING".equals(state) ||
+                            "FAILED".equals(state);
+                    readyComponentValues[i].setText(active ? koreanState(value) : "시스템 미실행");
+                    readyComponentValues[i].setTextColor(active ? statusColor(value) : MUTED);
                 }
-                readyComponents.setText(details.toString().trim());
             }
             JSONObject jobs = ready.optJSONObject("jobs");
             if (jobs != null) {
@@ -856,7 +915,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 showUnknownSafety("최신 Safety 데이터를 확인할 수 없습니다.");
             } else {
                 String state = safety.optString("state", "UNKNOWN");
-                safetyState.setText("Safety: " + state);
+                safetyState.setText(safetyTitle(state));
                 safetyState.setTextColor("CLEAR".equals(state) ? GREEN :
                         "SLOW".equals(state) ? AMBER : "STOP".equals(state) ? RED : MUTED);
                 String reason = safety.optString("reason", "이유 정보 없음");
@@ -869,8 +928,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
                          "COMMITTING".equals(replanState))) {
                     safetyReason.setText("우회 경로 생성 중...");
                 } else {
-                    safetyReason.setText("GOAL_APPROACH".equals(reason)
-                            ? "목적지 접근 중" : reason);
+                    safetyReason.setText(safetyExplanation(reason));
                 }
             }
         } else if (!driveConfirmed && !"CHECKING".equals(phase) &&
