@@ -916,7 +916,8 @@ public final class PidOperatorActivity extends AppCompatActivity {
         };
         for (int i = 0; i < codes.length; i++) {
             lidarTestValues[i].setText(koreanState(codes[i]));
-            lidarTestValues[i].setTextColor(statusColor(codes[i]));
+            lidarTestValues[i].setTextColor(live && "STOPPED".equals(codes[i])
+                    ? RED : statusColor(codes[i]));
         }
         lidarTestDetail.setText(monitorStale
                 ? "상태 모니터 갱신이 끊겼습니다. 연결과 NUC 로그를 확인하세요."
@@ -949,8 +950,11 @@ public final class PidOperatorActivity extends AppCompatActivity {
                     String value = components.optString(COMPONENT_KEYS[i], "UNKNOWN");
                     boolean active = "READY".equals(state) || "STARTING".equals(state) ||
                             "FAILED".equals(state);
-                    readyComponentValues[i].setText(active ? koreanState(value) : "시스템 미실행");
-                    readyComponentValues[i].setTextColor(active ? statusColor(value) : MUTED);
+                    boolean waitingForStartup = "STARTING".equals(state) && "STALE".equals(value);
+                    readyComponentValues[i].setText(!active ? "시스템 미실행" :
+                            waitingForStartup ? "수신 대기 중" : koreanState(value));
+                    readyComponentValues[i].setTextColor(!active ? MUTED :
+                            waitingForStartup ? AMBER : statusColor(value));
                 }
             }
             JSONObject jobs = ready.optJSONObject("jobs");
