@@ -225,6 +225,11 @@ class Bridge:
                 if self.job_status["name"] == name:
                     self.job_status = dict(job)
             self._consume_script_event(name, line)
+            if name == "lidar_test_start" and "[STEP] READY 종료 확인 완료" in line:
+                # The test script has positively completed READY teardown.
+                # Reconcile stale bridge state even if later test startup fails.
+                self.ready_state = "STOPPED"
+                self.latest.clear()
             if name == "ready_start" and line:
                 self.ready_history.append(line[:300])
                 # pid_ready_monitor.py emits one [ERROR] for EACH failed
@@ -374,6 +379,8 @@ class Bridge:
             self._run_job("ready_stop", ["pid_ready.sh", "stop"])
         except Exception as exc:
             LOG.warning("READY stop refused: %s", exc)
+            with self.lock:
+                self.ready_state = "FAILED"
             self._emit({"type": "job_result", "job": "ready_stop",
                         "ok": False, "detail": str(exc)})
         finally:
