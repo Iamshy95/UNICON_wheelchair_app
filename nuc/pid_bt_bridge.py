@@ -218,6 +218,10 @@ class Bridge:
                 tail.append(line[:240])
                 del tail[:-12]
                 job["detail"] = line[:240]
+                if "[FAIL]" in line or "[ERROR]" in line:
+                    # Retain the FIRST concrete failure; cleanup logs must
+                    # not replace the actionable reason shown to the operator.
+                    job.setdefault("failure_detail", line[:300])
                 if self.job_status["name"] == name:
                     self.job_status = dict(job)
             self._consume_script_event(name, line)
@@ -269,6 +273,9 @@ class Bridge:
                     job["exit_code"] = code
                     if self.job_status["name"] == name:
                         self.job_status = dict(job)
+                if name == "lidar_test_start" and code == 0:
+                    # The isolated test has shut down any registered READY stack.
+                    self.ready_state = "STOPPED"
                 if name == "ready_start":
                     self.ready_state = "READY" if code == 0 else "FAILED"
                     if code == 0:
@@ -309,7 +316,8 @@ class Bridge:
                                     "exit_code": code})
                 self._emit({"type": "job_result", "job": name,
                             "ok": code == 0, "exit_code": code,
-                            "detail": (job or {}).get("detail", "")})
+                            "detail": ((job or {}).get("failure_detail") if code != 0 else None)
+                                      or (job or {}).get("detail", "")})
             if end_callback:
                 end_callback(code)
             LOG.info("%s exited %s", name, code)
@@ -451,10 +459,15 @@ class Bridge:
             elif command in ("lidar_test_start", "lidar_test_stop"):
                 if command == "lidar_test_start":
                     with self.lock:
-                        if (self._running("ready_start") or self._running("drive")
-                                or self._running("ready_stop") or
-                                self.ready_state in ("READY", "STARTING", "STOPPING")):
-                            raise RuntimeError("READY/DRIVE is active; end it before LiDAR testing")
+                        if self._running("ready_start") or self._running("ready_stop") or self.ready_stopping:
+                            raise RuntimeError("READY startup/shutdown is in progress; finish it before testing")
+                        if (self._running("drive") or self._running("drive_stop")
+                                or self.drive_phase in ("RUNNING", "CHECKING",
+                                                       "START_REQUEST_ACCEPTED", "STOPPING",
+                                                       "GOAL_ARRIVED", "NEEDS_STOP", "STOP_UNVERIFIED")):
+                            raise RuntimeError("DRIVE session must be ended and verified before LiDAR testing")
+                        # A completed/failed READY stack is cleaned by pid_lidar_test.sh.
+                        # Do not trust the cached ready_state as an active-process test.
                         if self._running("lidar_test_start") or self._running("lidar_test_stop"):
                             raise RuntimeError("LiDAR test command already running")
                     if (self.lidar_test_state / "active").exists():
