@@ -39,6 +39,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
+import java.util.Locale;
 
 /**
  * FF–PID operator UI: ADMIN READY + RIDER route/drive, with one common BT link.
@@ -68,7 +69,17 @@ public final class PidOperatorActivity extends AppCompatActivity {
     private LinearLayout root;
     private LinearLayout adminScreen, riderScreen;
     private TextView commonBluetooth, adminBluetooth, riderBluetooth;
-    private TextView readyState, readyComponents, readyLogs, readyNote;
+    private TextView readyState, readyLogs, readyNote, readyButtonHint;
+    private LinearLayout readyComponentRows;
+    private final TextView[] readyComponentValues = new TextView[9];
+    private static final String[] COMPONENT_KEYS = {
+            "LiDAR", "IMU", "FAST-LIO", "Map Pose", "GICP Diagnostics",
+            "Perception", "GICP Exclusions", "Wheel Status", "UART Diagnostics"
+    };
+    private static final String[] COMPONENT_LABELS = {
+            "LiDAR", "IMU", "FAST-LIO", "지도 위치추정", "GICP 진단",
+            "장애물 인식", "GICP 제외 영역", "바퀴 상태", "UART 진단"
+    };
     private TextView lidarTestStatus, lidarTestDetail;
     private Button lidarTestStart, lidarTestStop;
     private String lidarTestPhase = "STOPPED";
@@ -268,17 +279,34 @@ public final class PidOperatorActivity extends AppCompatActivity {
         add(rcard, readyBtns, 14);
         readyState = text("READY: 상태 미확인", 16, MUTED, true);
         add(rcard, readyState, 17);
-        readyComponents = text("LiDAR, IMU, FAST-LIO, GICP 등의 상태를 수신하면 표시합니다.", 14, MUTED, false);
-        readyComponents.setLineSpacing(dp(4), 1.0f);
-        add(rcard, readyComponents, 10);
+        readyComponentRows = column();
+        add(rcard, readyComponentRows, 10);
+        for (int i = 0; i < COMPONENT_KEYS.length; i++) {
+            LinearLayout line = new LinearLayout(this);
+            line.setOrientation(LinearLayout.HORIZONTAL);
+            line.setPadding(dp(10), dp(8), dp(10), dp(8));
+            line.setBackground(background(BG, 0));
+            LinearLayout.LayoutParams lineParams = new LinearLayout.LayoutParams(-1, -2);
+            lineParams.topMargin = dp(4);
+            readyComponentRows.addView(line, lineParams);
+            TextView nameView = text(COMPONENT_LABELS[i], 13, INK, true);
+            line.addView(nameView, new LinearLayout.LayoutParams(0, -2, 1));
+            readyComponentValues[i] = text("미확인", 13, MUTED, true);
+            line.addView(readyComponentValues[i]);
+        }
+        readyButtonHint = text("READY를 시작하면 각 구성요소의 수신 상태가 표시됩니다.", 12, MUTED, false);
+        add(rcard, readyButtonHint, 9);
         readyNote = text("진행 단계 및 실패 사유", 13, MUTED, false);
         add(rcard, readyNote, 10);
+        add(rcard, text("READY 실행 기록", 14, INK, true), 12);
         readyLogs = text("", 12, MUTED, false);
         readyLogs.setLineSpacing(dp(3), 1f);
         add(rcard, readyLogs, 8);
         readyStart.setOnClickListener(v -> {
+            readyPhase = "STARTING";
             readyNote.setText("READY 실행 중 · 각 단계 상태를 확인하고 있습니다.");
             readyLogs.setText("");
+            updateControls();
             send("ready_start", null);
         });
         LinearLayout lidarCard = card(adminScreen);
@@ -312,7 +340,12 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 .setTitle("READY 종료")
                 .setMessage("주행 중이면 먼저 정지를 요청하고 확인한 뒤 READY 시스템을 종료합니다.")
                 .setNegativeButton("취소", null)
-                .setPositiveButton("종료", (dialog, which) -> send("ready_stop", null))
+                .setPositiveButton("종료", (dialog, which) -> {
+                    readyPhase = "STOPPING";
+                    readyNote.setText("READY 종료 요청 중 · 시스템 정리 상태를 확인하고 있습니다.");
+                    updateControls();
+                    send("ready_stop", null);
+                })
                 .show());
 
         LinearLayout riderConnectionCard = card(riderScreen);
@@ -367,7 +400,6 @@ public final class PidOperatorActivity extends AppCompatActivity {
         LinearLayout.LayoutParams mapLp = new LinearLayout.LayoutParams(-1, dp(330));
         mapLp.topMargin = dp(12);
         mapCard.addView(mapView, mapLp);
-        add(mapCard, text("경로와 위치는 ROS map 좌표계 기준입니다. 배경 지도는 사용하지 않습니다.", 12, MUTED, false), 8);
 
         LinearLayout controls = card(riderScreen);
         add(controls, text("주행 제어", 18, INK, true), 0);
@@ -424,12 +456,19 @@ public final class PidOperatorActivity extends AppCompatActivity {
         if (readyStart == null) return;
         boolean link = connected && System.currentTimeMillis() - lastFrameMs < 3500;
         boolean testActive = !"STOPPED".equals(lidarTestPhase);
-        readyStart.setEnabled(link && !testActive);
-        readyStop.setEnabled(link && !testActive);
+        boolean readyBusy = "STARTING".equals(readyPhase) || "STOPPING".equals(readyPhase);
+        boolean readyAlreadyActive = "READY".equals(readyPhase);
+        readyStart.setEnabled(link && !testActive && !readyBusy && !readyAlreadyActive);
+        readyStop.setEnabled(link && !testActive && !readyBusy && readyAlreadyActive);
+        readyButtonHint.setText(!link ? "Bluetooth 상태 수신이 필요합니다." :
+                testActive ? "LiDAR 테스트를 종료한 뒤 READY를 사용할 수 있습니다." :
+                "STARTING".equals(readyPhase) ? "READY 시작 중에는 종료할 수 없습니다." :
+                "STOPPING".equals(readyPhase) ? "READY 종료 작업이 진행 중입니다." :
+                readyAlreadyActive ? "READY 실행 중 · 종료 버튼을 사용할 수 있습니다." :
+                "READY를 시작하면 센서와 위치추정 상태를 검사합니다.");
         if (lidarTestStart != null) {
             lidarTestStart.setEnabled(link && !testActive &&
-                    !"READY".equals(readyPhase) && !"STARTING".equals(readyPhase) &&
-                    !"STOPPING".equals(readyPhase));
+                    !"STARTING".equals(readyPhase) && !"STOPPING".equals(readyPhase));
             lidarTestStop.setEnabled(link && testActive);
         }
         connect.setEnabled(!connected);
