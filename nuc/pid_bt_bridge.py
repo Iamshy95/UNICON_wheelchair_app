@@ -508,6 +508,8 @@ class Bridge:
                         raise RuntimeError("READY shutdown already requested")
                     if self._running("ready_start") or self._running("drive_stop"):
                         raise RuntimeError("READY startup or DRIVE stop still in progress")
+                    if self._running("lidar_test_start") or self._running("lidar_test_stop"):
+                        raise RuntimeError("LiDAR test setup or teardown is in progress")
                     self.ready_stopping = True
                     self.ready_state = "STOPPING"
                 threading.Thread(target=self._shutdown_ready, daemon=True,
