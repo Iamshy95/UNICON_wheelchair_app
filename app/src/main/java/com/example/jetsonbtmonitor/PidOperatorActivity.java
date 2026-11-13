@@ -91,6 +91,11 @@ public final class PidOperatorActivity extends AppCompatActivity {
     private Spinner routeSpinner;
     private PidRouteMapView mapView;
     private Button readyStart, readyStop, driveStart, driveStop, driveReconcile, connect;
+    private Button indoorStart, indoorExit;
+    private LinearLayout indoorScenarios;
+    private TextView indoorBanner;
+    private boolean indoorMode = false;
+    private IndoorDriveSimulator indoorSimulator;
     private boolean admin = true;
     private boolean connected = false;
     private long lastFrameMs = 0L;
@@ -107,6 +112,10 @@ public final class PidOperatorActivity extends AppCompatActivity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final Runnable freshnessTick = new Runnable() {
         @Override public void run() {
+            if (indoorMode && indoorSimulator != null) {
+                try { receive(indoorSimulator.telemetry().toString()); }
+                catch (JSONException ex) { driveNote.setText("실내 모의 상태 생성 실패: " + ex.getMessage()); }
+            }
             if (connected && System.currentTimeMillis() - lastFrameMs > 3500) {
                 showBluetooth("통신 지연 · 상태 확인 불가", AMBER);
                 showUnknownSafety("상태 정보를 수신하지 못했습니다.");
@@ -130,6 +139,10 @@ public final class PidOperatorActivity extends AppCompatActivity {
         bluetooth = BluetoothWheelchairClient.getSharedInstance(new BluetoothWheelchairClient.Callback() {
             @Override public void onConnected(BluetoothDevice device) {
                 runOnUiThread(() -> {
+                    if (indoorMode) {
+                        bluetooth.disconnect(); // Never allow a live socket in indoor mode.
+                        return;
+                    }
                     connected = true;
                     lastFrameMs = System.currentTimeMillis();
                     String name = "NUC";
@@ -143,6 +156,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
             }
             @Override public void onDisconnected() {
                 runOnUiThread(() -> {
+                    if (indoorMode) return;
                     connected = false;
                     driveConfirmed = false;
                     stopPending = false;
@@ -159,10 +173,11 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 runOnUiThread(() -> showBluetooth("재연결 중 · " + attempt + "회", AMBER));
             }
             @Override public void onLineReceived(String line) {
-                runOnUiThread(() -> receive(line));
+                runOnUiThread(() -> { if (!indoorMode) receive(line); });
             }
             @Override public void onError(String message, Throwable error) {
                 runOnUiThread(() -> {
+                    if (indoorMode) return;
                     showBluetooth("연결 오류", RED);
                     readyNote.setText(message);
                 });
@@ -280,6 +295,27 @@ public final class PidOperatorActivity extends AppCompatActivity {
         connect = button("NUC 연결", BLUE);
         add(bcard, connect, 12);
         connect.setOnClickListener(v -> connectNuc());
+        indoorStart = button("실내 모의 테스트 시작 (모터 명령 없음)", BLUE);
+        add(bcard, indoorStart, 8);
+        indoorExit = button("실내 모의 테스트 종료", MUTED);
+        add(bcard, indoorExit, 8);
+        indoorBanner = text("실내 모의 모드: 꺼짐", 13, MUTED, true);
+        add(bcard, indoorBanner, 7);
+        indoorScenarios = column();
+        add(bcard, indoorScenarios, 8);
+        for (String[] item : new String[][] {
+                {"normal", "정상 주행 / 종료"},
+                {"stale", "이전 주행 미종료 · 명령 거부"},
+                {"stop_failed", "종료 확인 실패"},
+                {"no_result", "종료 응답 누락 (15초)"},
+                {"wheel_unknown", "정지 센서 확인 불가"}
+        }) {
+            Button scenarioButton = button("모의: " + item[1], AMBER);
+            add(indoorScenarios, scenarioButton, 4);
+            scenarioButton.setOnClickListener(v -> applyIndoorScenario(item[0], item[1]));
+        }
+        indoorStart.setOnClickListener(v -> enterIndoorMode());
+        indoorExit.setOnClickListener(v -> exitIndoorMode());
 
         LinearLayout rcard = card(adminScreen);
         add(rcard, text("READY 시스템", 18, INK, true), 0);
@@ -515,7 +551,10 @@ public final class PidOperatorActivity extends AppCompatActivity {
             lidarTestStop.setEnabled(link && testActive &&
                     !"STARTING".equals(lidarTestPhase) && !"STOPPING".equals(lidarTestPhase));
         }
-        connect.setEnabled(!connected);
+        connect.setEnabled(!connected && !indoorMode);
+        if (indoorStart != null) indoorStart.setEnabled(!indoorMode);
+        if (indoorExit != null) indoorExit.setEnabled(indoorMode);
+        if (indoorScenarios != null) indoorScenarios.setVisibility(indoorMode ? View.VISIBLE : View.GONE);
         boolean active = Arrays.asList("CHECKING", "START_REQUEST_ACCEPTED",
                 "RUNNING", "STOPPING", "STATUS_STALE", "GOAL_ARRIVED",
                 "NEEDS_STOP", "STOP_UNVERIFIED").contains(currentDrivePhase) || driveReconciling;
@@ -536,6 +575,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
     }
 
     private void connectNuc() {
+        if (indoorMode) return;
         if (Build.VERSION.SDK_INT >= 31 &&
                 ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
                         != PackageManager.PERMISSION_GRANTED) {
@@ -593,7 +633,68 @@ public final class PidOperatorActivity extends AppCompatActivity {
         }
     }
 
+    private void enterIndoorMode() {
+        // The offline simulator is strictly mutually exclusive with real Bluetooth.
+        if (bluetooth != null && bluetooth.isConnected()) {
+            readyNote.setText("실내 모의 테스트를 시작하려면 실제 Bluetooth 연결을 먼저 해제해야 합니다.");
+            return;
+        }
+        if (bluetooth != null) bluetooth.disconnect(); // Also cancel reconnect attempts.
+        indoorMode = true;
+        indoorSimulator = new IndoorDriveSimulator();
+        connected = true; // Locally simulated telemetry, never a real link.
+        lastFrameMs = System.currentTimeMillis();
+        indoorBanner.setText("모의 테스트 실행 중 · 실제 NUC/ROS/모터 연결 없음");
+        indoorBanner.setTextColor(RED);
+        lastDriveCommandError = null;
+        stopPending = false;
+        driveReconciling = false;
+        showBluetooth("실내 모의 연결 · 실제 NUC 연결 아님", AMBER);
+        applyIndoorScenario("normal", "정상 주행 / 종료");
+        adminScreen.setVisibility(View.VISIBLE);
+        riderScreen.setVisibility(View.GONE);
+    }
+
+    private void applyIndoorScenario(String scenario, String label) {
+        if (!indoorMode || indoorSimulator == null) return;
+        try {
+            lastDriveCommandError = null;
+            stopPending = false;
+            driveReconciling = false;
+            for (JSONObject f : indoorSimulator.scenario(scenario)) receive(f.toString());
+            indoorBanner.setText("실내 모의 테스트 · " + label + " · 실제 주행 없음");
+            driveNote.setText("모의 시나리오: " + label + "\n탑승자 화면에서 주행 시작/종료/재검증 버튼을 확인하세요.");
+        } catch (JSONException ex) {
+            readyNote.setText("실내 모의 시나리오 생성 실패: " + ex.getMessage());
+        }
+    }
+
+    private void exitIndoorMode() {
+        if (!indoorMode) return;
+        indoorMode = false;
+        indoorSimulator = null;
+        connected = false;
+        readyPhase = "UNKNOWN";
+        wheelMode = "UNKNOWN";
+        currentDrivePhase = "UNKNOWN";
+        stopPending = false;
+        driveReconciling = false;
+        driveConfirmed = false;
+        lastDriveCommandError = null;
+        indoorBanner.setText("실내 모의 모드: 꺼짐 · 실차 제어에는 NUC 재연결 필요");
+        indoorBanner.setTextColor(MUTED);
+        showBluetooth("연결 안 됨 · 실내 모의 테스트 종료", RED);
+        showUnknownSafety("실제 NUC 상태를 수신하지 못했습니다.");
+        updateControls();
+    }
+
     private void send(String command, String route) {
+        if (indoorMode) {
+            if (indoorSimulator == null) return;
+            try { for (JSONObject frame : indoorSimulator.handle(command, route)) receive(frame.toString()); }
+            catch (JSONException ex) { driveNote.setText("실내 모의 명령 처리 실패: " + ex.getMessage()); }
+            return;
+        }
         if (bluetooth == null || !bluetooth.isConnected()) {
             if ("drive_stop".equals(command)) {
                 stopPending = false;
@@ -619,9 +720,11 @@ public final class PidOperatorActivity extends AppCompatActivity {
         try {
             JSONObject f = new JSONObject(line);
             String type = f.optString("type");
+            if (indoorMode != f.optBoolean("simulated", false)) return;
             lastFrameMs = System.currentTimeMillis();
             if (!connected) connected = true;
-            showBluetooth("연결됨 · 상태 수신 중", GREEN);
+            showBluetooth(indoorMode ? "실내 모의 연결 · 실제 NUC 연결 아님"
+                    : "연결됨 · 상태 수신 중", indoorMode ? AMBER : GREEN);
             if ("route".equals(type)) {
                 if (selectedRoute.equals(f.optString("route"))) {
                     mapView.setRoute(selectedRoute, f.optJSONArray("points"));
