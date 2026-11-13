@@ -204,7 +204,10 @@ class Bridge:
 
 
     def _script(self, filename):
-        path = self.scripts / filename
+        # The optional read-only verifier is shipped beside this bridge, not
+        # in the team PID control scripts. Do not touch deployed FF-PD code.
+        path = (Path(__file__).resolve().with_name(filename)
+                if filename == "pid_drive_reconcile.sh" else self.scripts / filename)
         if not path.is_file():
             raise RuntimeError("Missing NUC PID script: " + str(path))
         return str(path)
