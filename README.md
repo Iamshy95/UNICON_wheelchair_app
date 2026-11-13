@@ -89,23 +89,15 @@ source-linux/routes/route2_manual_20261031/
 
 Bluetooth 장치 이름은 페어링 목록에서 `nuc`, `wheelchair`, 또는 정확히 `mprp3`인 기기를 자동 인식합니다. 한 번 선택되면 MAC 주소를 저장해 이후 연결 시 우선 사용합니다. 별도의 기기 선택 화면은 없습니다.
 
-## 앱 상태 처리 오프라인 단위 테스트 (운영 화면과 완전히 분리)
-
-실내 모의 테스트 **화면과 버튼은 실제 Android 앱에서 제거했습니다.** 실차 운용 앱에는 관리자/탑승자 기존 화면과 `정지 상태 재검증` 버튼만 남습니다.
-
-실제 Bluetooth, LiDAR, ROS, 모터와 관련 없는 상태 전이 검사는 Android 프로젝트의 `app/src/test/` 아래 `IndoorDriveSimulator.java`, `IndoorDriveSimulatorTest.java`에만 남겨두었습니다. 따라서 이 모의 엔진은 운영 APK에 들어가지 않으며, LiDAR가 없는 가짜 환경에서 눌러 오류가 나던 테스트 버튼도 없습니다.
-
-오프라인 단위 테스트: `./gradlew :app:testDebugUnitTest`
-
-**단위 테스트 통과는 실제 앱–NUC 통합 검증이 아닙니다.** NUC Bluetooth 브릿지를 수정 배포한 후, 실제 바퀴가 MANUAL/정지임을 확인한 환경에서 `정지 상태 재검증`이 정상적으로 동작하는지 별도로 시험해야 합니다.
-
 ## Android 빌드
 
 기존 프로젝트 폴더에서 최신 코드를 받습니다.
 
 ```bash
 cd ~/ws/wheelchair_ws/UNICON_wheelchair_app
-git pull origin main
+git fetch origin
+git switch fix/drive-stop-recovery-20261113
+git pull --ff-only origin fix/drive-stop-recovery-20261113
 ```
 
 Android Studio에서 **Build > Make Project** 후 에뮬레이터 또는 USB 디버깅을 켠 스마트폰을 선택하여 **Run(▶)** 을 누릅니다.
