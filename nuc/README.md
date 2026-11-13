@@ -93,4 +93,4 @@ NUC OS에 `python3-dbus`, `python3-gi`와 BlueZ가 설치되어 있어야 합니
 
 저장소 복사본에서 `python3 -m unittest discover -s nuc/tests -p 'test_*.py' -v` 를 실행하면 브릿지의 오래된 상태 차단, 종료 재시도 허용, 재검증 요청, 동시 작업 거부를 **실제 ROS/블루투스/구동 없이** 시험할 수 있습니다. 테스트는 `_run_job`을 대체하므로 실제 `pid_drive.sh`나 `pid_stop.sh`를 실행하지 않습니다. 실기 정차 검증과는 별개입니다.
 
-Android 앱의 관리자 화면에서 제공하는 **실내 모의 테스트**도 완전 오프라인이며, NUC 브릿지 자체가 아닌 앱 버튼/화면 상태를 시험합니다. 오늘 밤 모의 시험을 위해 NUC 서비스를 재시작하거나 배포를 바꿀 필요는 없습니다.
+운영 Android 앱의 실내 모의 테스트 화면과 버튼은 제거했습니다. Android 모의 상태 전이 검사는 `app/src/test/`의 단위 테스트 코드에서만 실행되며, APK나 실제 Bluetooth 제어 경로에 포함되지 않습니다. 실제 Bluetooth 상태 복구 동작을 확인하려면 NUC 브릿지 배포 후 실내 통합 시험이 필요합니다.
