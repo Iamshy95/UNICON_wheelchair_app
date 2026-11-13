@@ -100,6 +100,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
     private boolean stopPending = false;
     private long stopRequestedAtMs = 0L;
     private boolean driveReconciling = false;
+    private long driveReconcileRequestedAtMs = 0L;
     private String lastDriveCommandError = null;
     private String wheelMode = "UNKNOWN";
     private boolean routeSpinnerUpdating = false;
@@ -462,6 +463,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
         driveReconcile.setOnClickListener(v -> {
             lastDriveCommandError = null;
             driveReconciling = true;
+            driveReconcileRequestedAtMs = System.currentTimeMillis();
             driveNote.setText("정지 상태 재검증 요청 중 · NUC의 바퀴·모드·프로세스 확인 대기");
             updateControls();
             send("drive_reconcile", null);
@@ -1001,6 +1003,13 @@ public final class PidOperatorActivity extends AppCompatActivity {
     }
 
     private void renderTelemetry(JSONObject f) {
+        // Recover UI if the async verification result was lost during reconnection.
+        if (driveReconciling
+                && System.currentTimeMillis() - driveReconcileRequestedAtMs > 4000L
+                && !f.optBoolean("drive_reconcile_running", true)) {
+            driveReconciling = false;
+            driveNote.setText("재검증 상태 수신 복구 · NUC의 최신 주행 상태를 확인하세요.");
+        }
         renderLidarTest(f.optJSONObject("lidar_test"));
         JSONObject ready = f.optJSONObject("ready");
         if (ready != null && "STARTING".equals(lidarTestPhase)) {
