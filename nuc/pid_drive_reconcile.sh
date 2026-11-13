@@ -4,7 +4,8 @@
 set -Eeuo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROS_SETUP="${ROS_SETUP:-/opt/ros/noetic/setup.bash}"
-CHECK="$SCRIPT_DIR/pid_drive_check.py"
+[[ "$#" -eq 1 ]] || { echo "[FAIL] PID scripts directory required" >&2; exit 1; }
+CHECK="$1/pid_drive_check.py"
 fail() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
 [[ -r "$ROS_SETUP" ]] || fail "ROS setup unavailable: $ROS_SETUP"
 [[ -f "$CHECK" ]] || fail "Wheel checker unavailable: $CHECK"
