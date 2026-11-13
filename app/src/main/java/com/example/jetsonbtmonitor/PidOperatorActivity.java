@@ -568,7 +568,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
                         "STOP_UNVERIFIED").contains(currentDrivePhase));
         if (driveReconcile != null) {
             driveReconcile.setEnabled(link && !testActive && !driveReconciling &&
-                    Arrays.asList("STOPPING", "STOP_UNVERIFIED", "NEEDS_STOP",
+                    Arrays.asList("IDLE", "STOPPING", "STOP_UNVERIFIED", "NEEDS_STOP",
                             "GOAL_ARRIVED", "REJECTED", "FAILED", "UNKNOWN",
                             "STOPPED").contains(currentDrivePhase));
         }
