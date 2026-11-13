@@ -273,6 +273,27 @@ class Bridge:
                 if self.jobs.get(name) is proc:
                     self.jobs.pop(name, None)
                 job = self.job_states.get(name)
+                if name == "drive_reconcile" and code == 0:
+                    # Read-only verification must not overwrite concurrent STOP/DRIVE.
+                    if (self._running("drive") or self._running("drive_stop")
+                            or self.ready_stopping
+                            or self.drive_phase in ("CHECKING", "START_REQUEST_ACCEPTED",
+                                                    "RUNNING", "STOPPING")):
+                        code = 5
+                        if job is not None:
+                            job["failure_detail"] = "DRIVE/STOP state changed during verification"
+                    else:
+                        self.drive_phase = "STOPPED"
+                        self.active_route = None
+                        self.drive_confirmed = False
+                        self.drive_accepted = False
+                        self.drive_rejection_sent = False
+                        self.drive_terminal_reason = None
+                        self.last_preflight = None
+                        LOG.info("drive_reconcile: verified stopped MANUAL; stale session cleared")
+                        self._emit({"type": "drive_result", "status": "STOPPED",
+                                    "reason": "RECONCILE_VERIFIED",
+                                    "message": "정지·MANUAL·주행 프로세스 종료 확인 완료"})
                 if job is not None:
                     job["state"] = "SUCCEEDED" if code == 0 else "FAILED"
                     job["exit_code"] = code
@@ -523,6 +544,17 @@ class Bridge:
             elif command == "status":
                 response.update(ok=True, detail="Current telemetry follows")
                 extra = self.telemetry()
+            elif command == "drive_reconcile":
+                # Read-only reconciliation. Never clear state based solely on a timeout.
+                with self.lock:
+                    if (self._running("drive") or self._running("drive_stop")
+                            or self._running("drive_reconcile")
+                            or self._running("ready_start") or self._running("ready_stop")
+                            or self.ready_stopping):
+                        raise RuntimeError("DRIVE/STOP/READY job still active; cannot verify stopped session")
+                    if self.drive_phase in ("CHECKING", "START_REQUEST_ACCEPTED", "RUNNING"):
+                        raise RuntimeError("Drive may be active; use DRIVE STOP first")
+                response.update(self._run_job("drive_reconcile", ["pid_drive_reconcile.sh"]))
             elif command == "drive_start":
                 if ((self.lidar_test_state / "active").exists() or
                         self._running("lidar_test_start") or self._running("lidar_test_stop")):
@@ -536,6 +568,7 @@ class Bridge:
                     if self.estop_latched:
                         raise RuntimeError("E-STOP latched; release separately")
                     if (self._running("drive") or self._running("drive_stop")
+                            or self._running("drive_reconcile")
                             or self.drive_phase in ("CHECKING", "START_REQUEST_ACCEPTED", "RUNNING",
                                                     "STOPPING", "GOAL_ARRIVED", "NEEDS_STOP",
                                                     "STOP_UNVERIFIED")):
@@ -591,7 +624,8 @@ class Bridge:
                 response["detail"] = "Unknown command"
         except Exception as exc:
             response["detail"] = str(exc)
-            LOG.warning("Rejected %s: %s", command, exc)
+            LOG.warning("Rejected %s: %s [drive_phase=%s, ready_state=%s]",
+                        command, exc, self.drive_phase, self.ready_state)
         return response, extra
 
     def _store(self, key, data):
@@ -811,6 +845,7 @@ class Bridge:
                 "drive_phase": phase,
                 "drive_terminal_reason": self.drive_terminal_reason,
                 "drive_confirmed": self.drive_confirmed,
+                "drive_reconcile_running": self._running("drive_reconcile"),
                 "drive": drive, "last_preflight": self.last_preflight,
                 "last_drive_event": self.last_drive_event,
                 "safety": safety,
