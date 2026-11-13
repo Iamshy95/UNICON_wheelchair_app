@@ -204,7 +204,10 @@ class Bridge:
 
 
     def _script(self, filename):
-        path = self.scripts / filename
+        # The optional read-only verifier is shipped beside this bridge, not
+        # in the team PID control scripts. Do not touch deployed FF-PD code.
+        path = (Path(__file__).resolve().with_name(filename)
+                if filename == "pid_drive_reconcile.sh" else self.scripts / filename)
         if not path.is_file():
             raise RuntimeError("Missing NUC PID script: " + str(path))
         return str(path)
@@ -273,6 +276,27 @@ class Bridge:
                 if self.jobs.get(name) is proc:
                     self.jobs.pop(name, None)
                 job = self.job_states.get(name)
+                if name == "drive_reconcile" and code == 0:
+                    # Read-only verification must not overwrite concurrent STOP/DRIVE.
+                    if (self._running("drive") or self._running("drive_stop")
+                            or self.ready_stopping
+                            or self.drive_phase in ("CHECKING", "START_REQUEST_ACCEPTED",
+                                                    "RUNNING", "STOPPING")):
+                        code = 5
+                        if job is not None:
+                            job["failure_detail"] = "DRIVE/STOP state changed during verification"
+                    else:
+                        self.drive_phase = "STOPPED"
+                        self.active_route = None
+                        self.drive_confirmed = False
+                        self.drive_accepted = False
+                        self.drive_rejection_sent = False
+                        self.drive_terminal_reason = None
+                        self.last_preflight = None
+                        LOG.info("drive_reconcile: verified stopped MANUAL; stale session cleared")
+                        self._emit({"type": "drive_result", "status": "STOPPED",
+                                    "reason": "RECONCILE_VERIFIED",
+                                    "message": "정지·MANUAL·주행 프로세스 종료 확인 완료"})
                 if job is not None:
                     job["state"] = "SUCCEEDED" if code == 0 else "FAILED"
                     job["exit_code"] = code
@@ -469,6 +493,7 @@ class Bridge:
                         if self._running("ready_start") or self._running("ready_stop") or self.ready_stopping:
                             raise RuntimeError("READY startup/shutdown is in progress; finish it before testing")
                         if (self._running("drive") or self._running("drive_stop")
+                                or self._running("drive_reconcile")
                                 or self.drive_phase in ("RUNNING", "CHECKING",
                                                        "START_REQUEST_ACCEPTED", "STOPPING",
                                                        "GOAL_ARRIVED", "NEEDS_STOP", "STOP_UNVERIFIED")):
@@ -495,8 +520,9 @@ class Bridge:
                         raise RuntimeError("READY shutdown in progress")
                     if self._running("ready_start"):
                         raise RuntimeError("READY already starting")
-                    if self._running("drive") or self._running("drive_stop"):
-                        raise RuntimeError("DRIVE session or stop is still active")
+                    if (self._running("drive") or self._running("drive_stop")
+                            or self._running("drive_reconcile")):
+                        raise RuntimeError("DRIVE session or verification is still active")
                     # Reject before resetting diagnostics from the active run.
                     self.ready_history.clear()
                     self.ready_failures.clear()
@@ -523,6 +549,17 @@ class Bridge:
             elif command == "status":
                 response.update(ok=True, detail="Current telemetry follows")
                 extra = self.telemetry()
+            elif command == "drive_reconcile":
+                # Read-only reconciliation. Never clear state based solely on a timeout.
+                with self.lock:
+                    if (self._running("drive") or self._running("drive_stop")
+                            or self._running("drive_reconcile")
+                            or self._running("ready_start") or self._running("ready_stop")
+                            or self.ready_stopping):
+                        raise RuntimeError("DRIVE/STOP/READY job still active; cannot verify stopped session")
+                    if self.drive_phase in ("CHECKING", "START_REQUEST_ACCEPTED", "RUNNING"):
+                        raise RuntimeError("Drive may be active; use DRIVE STOP first")
+                response.update(self._run_job("drive_reconcile", ["pid_drive_reconcile.sh", str(self.scripts)]))
             elif command == "drive_start":
                 if ((self.lidar_test_state / "active").exists() or
                         self._running("lidar_test_start") or self._running("lidar_test_stop")):
@@ -536,6 +573,7 @@ class Bridge:
                     if self.estop_latched:
                         raise RuntimeError("E-STOP latched; release separately")
                     if (self._running("drive") or self._running("drive_stop")
+                            or self._running("drive_reconcile")
                             or self.drive_phase in ("CHECKING", "START_REQUEST_ACCEPTED", "RUNNING",
                                                     "STOPPING", "GOAL_ARRIVED", "NEEDS_STOP",
                                                     "STOP_UNVERIFIED")):
@@ -591,7 +629,8 @@ class Bridge:
                 response["detail"] = "Unknown command"
         except Exception as exc:
             response["detail"] = str(exc)
-            LOG.warning("Rejected %s: %s", command, exc)
+            LOG.warning("Rejected %s: %s [drive_phase=%s, ready_state=%s]",
+                        command, exc, self.drive_phase, self.ready_state)
         return response, extra
 
     def _store(self, key, data):
@@ -811,6 +850,7 @@ class Bridge:
                 "drive_phase": phase,
                 "drive_terminal_reason": self.drive_terminal_reason,
                 "drive_confirmed": self.drive_confirmed,
+                "drive_reconcile_running": self._running("drive_reconcile"),
                 "drive": drive, "last_preflight": self.last_preflight,
                 "last_drive_event": self.last_drive_event,
                 "safety": safety,

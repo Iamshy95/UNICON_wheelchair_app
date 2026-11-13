@@ -95,7 +95,9 @@ Bluetooth 장치 이름은 페어링 목록에서 `nuc`, `wheelchair`, 또는 �
 
 ```bash
 cd ~/ws/wheelchair_ws/UNICON_wheelchair_app
-git pull origin main
+git fetch origin
+git switch fix/drive-stop-recovery-20261113
+git pull --ff-only origin fix/drive-stop-recovery-20261113
 ```
 
 Android Studio에서 **Build > Make Project** 후 에뮬레이터 또는 USB 디버깅을 켠 스마트폰을 선택하여 **Run(▶)** 을 누릅니다.

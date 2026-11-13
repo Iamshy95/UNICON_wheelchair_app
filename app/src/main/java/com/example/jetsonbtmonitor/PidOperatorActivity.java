@@ -90,7 +90,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
     private TextView driveNote, safetyState, safetyReason, currentRoute, wheelModeText;
     private Spinner routeSpinner;
     private PidRouteMapView mapView;
-    private Button readyStart, readyStop, driveStart, driveStop, connect;
+    private Button readyStart, readyStop, driveStart, driveStop, driveReconcile, connect;
     private boolean admin = true;
     private boolean connected = false;
     private long lastFrameMs = 0L;
@@ -98,6 +98,10 @@ public final class PidOperatorActivity extends AppCompatActivity {
     private String currentDrivePhase = "IDLE";
     private boolean driveConfirmed = false;
     private boolean stopPending = false;
+    private long stopRequestedAtMs = 0L;
+    private boolean driveReconciling = false;
+    private long driveReconcileRequestedAtMs = 0L;
+    private String lastDriveCommandError = null;
     private String wheelMode = "UNKNOWN";
     private boolean routeSpinnerUpdating = false;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -108,6 +112,12 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 showUnknownSafety("상태 정보를 수신하지 못했습니다.");
                 mapView.setPose(null);
                 driveStart.setEnabled(false);
+            }
+            if (stopPending && System.currentTimeMillis() - stopRequestedAtMs > 15000L) {
+                // An ACK or result may be lost; do not equate timeout with physical STOP.
+                stopPending = false;
+                driveNote.setText("주행 종료 결과 미확인 · 정차를 확인한 뒤 종료 재시도 또는 상태 재검증을 사용하세요.");
+                updateControls();
             }
             ui.postDelayed(this, 1000);
         }
@@ -135,6 +145,9 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     connected = false;
                     driveConfirmed = false;
+                    stopPending = false;
+                    driveReconciling = false;
+                    currentDrivePhase = "STOP_UNVERIFIED";
                     showBluetooth("연결 끊김 · 주행 상태 확인 불가", RED);
                     driveStart.setEnabled(false);
                     readyStart.setEnabled(false);
@@ -429,18 +442,31 @@ public final class PidOperatorActivity extends AppCompatActivity {
         driveStart.setEnabled(false);
         driveStop.setEnabled(false);
         driveStart.setOnClickListener(v -> {
+            lastDriveCommandError = null;
             driveNote.setText("출발 조건을 확인하고 있습니다.");
             currentDrivePhase = "CHECKING";
             updateControls();
             send("drive_start", selectedRoute);
         });
         driveStop.setOnClickListener(v -> {
-            // STOP does not wait for the long-running drive shell.
-            driveNote.setText("주행 종료 요청 중 · MANUAL 정차 확인 대기");
+            // STOP is idempotent on the NUC; result is never presumed successful.
+            lastDriveCommandError = null;
+            driveNote.setText("주행 종료 명령 전송 시도 · NUC 접수 확인 대기");
             stopPending = true;
+            stopRequestedAtMs = System.currentTimeMillis();
             currentDrivePhase = "STOPPING";
             updateControls();
             send("drive_stop", null);
+        });
+        driveReconcile = button("정지 상태 재검증", BLUE);
+        add(controls, driveReconcile, 8);
+        driveReconcile.setOnClickListener(v -> {
+            lastDriveCommandError = null;
+            driveReconciling = true;
+            driveReconcileRequestedAtMs = System.currentTimeMillis();
+            driveNote.setText("정지 상태 재검증 요청 중 · NUC의 바퀴·모드·프로세스 확인 대기");
+            updateControls();
+            send("drive_reconcile", null);
         });
 
         LinearLayout statusCard = card(riderScreen);
@@ -474,7 +500,9 @@ public final class PidOperatorActivity extends AppCompatActivity {
         boolean readyBusy = "STARTING".equals(readyPhase) || "STOPPING".equals(readyPhase);
         boolean readyAlreadyActive = "READY".equals(readyPhase);
         readyStart.setEnabled(link && !testActive && !readyBusy && !readyAlreadyActive);
-        readyStop.setEnabled(link && !testActive && !readyBusy && readyAlreadyActive);
+        // FAILED may be a partial shutdown; the operator must be able to retry cleanup.
+        readyStop.setEnabled(link && !testActive && !readyBusy &&
+                (readyAlreadyActive || "FAILED".equals(readyPhase)));
         readyButtonHint.setText(!link ? "Bluetooth 상태 수신이 필요합니다." :
                 testActive ? "LiDAR 테스트를 종료한 뒤 READY를 사용할 수 있습니다." :
                 "STARTING".equals(readyPhase) ? "READY 시작 중에는 종료할 수 없습니다." :
@@ -490,14 +518,21 @@ public final class PidOperatorActivity extends AppCompatActivity {
         connect.setEnabled(!connected);
         boolean active = Arrays.asList("CHECKING", "START_REQUEST_ACCEPTED",
                 "RUNNING", "STOPPING", "STATUS_STALE", "GOAL_ARRIVED",
-                "NEEDS_STOP", "STOP_UNVERIFIED").contains(currentDrivePhase);
+                "NEEDS_STOP", "STOP_UNVERIFIED").contains(currentDrivePhase) || driveReconciling;
         boolean startReady = "READY".equals(readyPhase) && "MANUAL".equals(wheelMode);
         driveStart.setEnabled(link && !active && !testActive && startReady);
         // At the goal, or after manual intervention, explicit STOP must still be possible.
-        driveStop.setEnabled(link && !testActive &&
+        // Do not permanently lock STOP merely because the cached phase is STOPPING.
+        driveStop.setEnabled(link && !testActive && !stopPending &&
                 Arrays.asList("CHECKING", "START_REQUEST_ACCEPTED", "RUNNING",
-                        "STATUS_STALE", "GOAL_ARRIVED", "NEEDS_STOP",
+                        "STOPPING", "STATUS_STALE", "GOAL_ARRIVED", "NEEDS_STOP",
                         "STOP_UNVERIFIED").contains(currentDrivePhase));
+        if (driveReconcile != null) {
+            driveReconcile.setEnabled(link && !testActive && !driveReconciling &&
+                    Arrays.asList("IDLE", "STOPPING", "STOP_UNVERIFIED", "NEEDS_STOP",
+                            "GOAL_ARRIVED", "REJECTED", "FAILED", "UNKNOWN",
+                            "STOPPED").contains(currentDrivePhase));
+        }
     }
 
     private void connectNuc() {
@@ -560,7 +595,16 @@ public final class PidOperatorActivity extends AppCompatActivity {
 
     private void send(String command, String route) {
         if (bluetooth == null || !bluetooth.isConnected()) {
-            readyNote.setText("NUC Bluetooth 연결이 필요합니다.");
+            if ("drive_stop".equals(command)) {
+                stopPending = false;
+                currentDrivePhase = "STOP_UNVERIFIED";
+            }
+            if ("drive_reconcile".equals(command)) driveReconciling = false;
+            lastDriveCommandError = "NUC Bluetooth 연결이 끊겨 [" + command
+                    + "] 명령을 전송하지 못했습니다. 실제 정차 상태를 확인하세요.";
+            if (command.startsWith("drive_")) driveNote.setText(lastDriveCommandError);
+            else readyNote.setText("NUC Bluetooth 연결이 필요합니다.");
+            updateControls();
             return;
         }
         try {
@@ -602,14 +646,17 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 } else if ("STARTED".equals(state) && "ROS_RUNNING".equals(f.optString("reason"))) {
                     currentDrivePhase = "RUNNING";
                     driveConfirmed = true;
+                    lastDriveCommandError = null;
                     driveNote.setText("주행 중 · Safety 상태를 확인하세요.");
                 } else if ("STOPPED".equals(state)) {
                     currentDrivePhase = "STOPPED";
                     stopPending = false;
                     driveConfirmed = false;
+                    lastDriveCommandError = null;
                     driveNote.setText("주행 종료 완료 · READY는 유지됩니다.");
                     showUnknownSafety("주행이 종료되었습니다.");
                 } else if ("STOP_UNVERIFIED".equals(state)) {
+                    stopPending = false;
                     currentDrivePhase = "STOP_UNVERIFIED";
                     driveNote.setText("정지 확인 실패 · 조이스틱으로 안전을 확보하고 정지 상태를 재확인하세요.");
                     showUnknownSafety("정지를 확인할 수 없습니다.");
@@ -652,18 +699,45 @@ public final class PidOperatorActivity extends AppCompatActivity {
                     readyNote.setText((f.optBoolean("ok") ? "READY 종료 완료" : "READY 종료 실패")
                             + "\n" + koreanIssue(f.optString("detail", "")));
                 }
-                if ("drive_stop".equals(name) && !f.optBoolean("ok")) {
-                    currentDrivePhase = "STOP_UNVERIFIED";
-                    showUnknownSafety("주행 종료가 확인되지 않았습니다.");
+                if ("drive_stop".equals(name)) {
+                    stopPending = false;
+                    if (!f.optBoolean("ok")) {
+                        currentDrivePhase = "STOP_UNVERIFIED";
+                        driveNote.setText("주행 종료 실패 · " + f.optString("detail", "정지 확인 실패"));
+                        showUnknownSafety("주행 종료가 확인되지 않았습니다.");
+                    }
+                } else if ("drive_reconcile".equals(name)) {
+                    driveReconciling = false;
+                    String detail = f.optString("detail", "검증 결과 없음");
+                    if (f.optBoolean("ok")) {
+                        lastDriveCommandError = null;
+                        currentDrivePhase = "STOPPED";
+                        stopPending = false;
+                        driveConfirmed = false;
+                        driveNote.setText("NUC 정차·MANUAL·주행 종료 검증 완료 · 다시 주행 시작할 수 있습니다.");
+                        showUnknownSafety("정지 상태 검증 완료");
+                    } else {
+                        driveNote.setText("정지 상태 재검증 실패 · " + detail);
+                        showUnknownSafety("정지 상태를 확인하지 못했습니다.");
+                    }
                 }
             } else if ("ack".equals(type)) {
-                if (!f.optBoolean("ok", false)) {
-                    String cmd = f.optString("command");
+                String cmd = f.optString("command", "알 수 없는 명령");
+                if (f.optBoolean("ok", false)) {
+                    if ("drive_stop".equals(cmd))
+                        driveNote.setText("NUC가 주행 종료 명령 접수 · 실제 정차 검증 대기");
+                    if ("drive_reconcile".equals(cmd))
+                        driveNote.setText("NUC가 정지 상태 재검증 명령 접수 · 검증 결과 대기");
+                } else {
                     if ("drive_start".equals(cmd)) currentDrivePhase = "REJECTED";
                     if ("ready_start".equals(cmd)) readyPhase = "FAILED";
                     if ("ready_stop".equals(cmd)) readyPhase = "FAILED";
-                    if ("drive_stop".equals(cmd)) currentDrivePhase = "STOP_UNVERIFIED";
-                    String detail = f.optString("detail");
+                    if ("drive_stop".equals(cmd)) {
+                        currentDrivePhase = "STOP_UNVERIFIED";
+                        stopPending = false;
+                    }
+                    if ("drive_reconcile".equals(cmd)) driveReconciling = false;
+                    String detail = f.optString("detail", "거부 사유 없음");
                     if (cmd.startsWith("lidar_test_")) {
                         lidarTestLastError = detail;
                         if ("lidar_test_start".equals(cmd)) lidarTestPhase = "STOPPED";
@@ -674,7 +748,10 @@ public final class PidOperatorActivity extends AppCompatActivity {
                         readyNote.setText("READY 요청 거부: " + koreanIssue(detail));
                         readyNote.setTextColor(RED);
                     } else {
-                        driveNote.setText("명령 거부: " + koreanIssue(detail));
+                        lastDriveCommandError = "NUC 명령 거부 [" + cmd + "]\n"
+                                + koreanIssue(detail) + "\n원문: " + detail
+                                + "\n현재 앱 주행 상태: " + currentDrivePhase;
+                        driveNote.setText(lastDriveCommandError);
                     }
                 }
             }
@@ -926,6 +1003,13 @@ public final class PidOperatorActivity extends AppCompatActivity {
     }
 
     private void renderTelemetry(JSONObject f) {
+        // Recover UI if the async verification result was lost during reconnection.
+        if (driveReconciling
+                && System.currentTimeMillis() - driveReconcileRequestedAtMs > 4000L
+                && !f.optBoolean("drive_reconcile_running", true)) {
+            driveReconciling = false;
+            driveNote.setText("재검증 상태 수신 복구 · NUC의 최신 주행 상태를 확인하세요.");
+        }
         renderLidarTest(f.optJSONObject("lidar_test"));
         JSONObject ready = f.optJSONObject("ready");
         if (ready != null && "STARTING".equals(lidarTestPhase)) {
@@ -1045,6 +1129,8 @@ public final class PidOperatorActivity extends AppCompatActivity {
         } else if ("STOP_UNVERIFIED".equals(phase)) {
             driveNote.setText("정지 확인 실패 · 실제 바퀴 정지와 수동 모드를 확인한 뒤 [주행 종료]를 다시 누르세요.");
         }
+        // Frequent telemetry must not hide the NUC's exact rejection reason.
+        if (lastDriveCommandError != null) driveNote.setText(lastDriveCommandError);
         JSONObject safety = f.optJSONObject("safety");
         if (driveConfirmed && ("RUNNING".equals(phase) || "STATUS_STALE".equals(phase))) {
             if (safety == null || "STATUS_STALE".equals(phase)) {
@@ -1071,7 +1157,8 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 !"START_REQUEST_ACCEPTED".equals(phase) && !"REJECTED".equals(phase)) {
             showUnknownSafety("주행 중이 아닙니다.");
         }
-        if (stopPending && "STOPPED".equals(phase)) stopPending = false;
+        if (stopPending && ("STOPPED".equals(phase) || "STOP_UNVERIFIED".equals(phase)))
+            stopPending = false;
         updateControls();
     }
 
