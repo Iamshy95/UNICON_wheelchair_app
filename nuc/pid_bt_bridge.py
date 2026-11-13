@@ -493,6 +493,7 @@ class Bridge:
                         if self._running("ready_start") or self._running("ready_stop") or self.ready_stopping:
                             raise RuntimeError("READY startup/shutdown is in progress; finish it before testing")
                         if (self._running("drive") or self._running("drive_stop")
+                                or self._running("drive_reconcile")
                                 or self.drive_phase in ("RUNNING", "CHECKING",
                                                        "START_REQUEST_ACCEPTED", "STOPPING",
                                                        "GOAL_ARRIVED", "NEEDS_STOP", "STOP_UNVERIFIED")):
@@ -519,8 +520,9 @@ class Bridge:
                         raise RuntimeError("READY shutdown in progress")
                     if self._running("ready_start"):
                         raise RuntimeError("READY already starting")
-                    if self._running("drive") or self._running("drive_stop"):
-                        raise RuntimeError("DRIVE session or stop is still active")
+                    if (self._running("drive") or self._running("drive_stop")
+                            or self._running("drive_reconcile")):
+                        raise RuntimeError("DRIVE session or verification is still active")
                     # Reject before resetting diagnostics from the active run.
                     self.ready_history.clear()
                     self.ready_failures.clear()
