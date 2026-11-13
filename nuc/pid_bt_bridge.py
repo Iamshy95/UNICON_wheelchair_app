@@ -557,7 +557,7 @@ class Bridge:
                         raise RuntimeError("DRIVE/STOP/READY job still active; cannot verify stopped session")
                     if self.drive_phase in ("CHECKING", "START_REQUEST_ACCEPTED", "RUNNING"):
                         raise RuntimeError("Drive may be active; use DRIVE STOP first")
-                response.update(self._run_job("drive_reconcile", ["pid_drive_reconcile.sh"]))
+                response.update(self._run_job("drive_reconcile", ["pid_drive_reconcile.sh", str(self.scripts)]))
             elif command == "drive_start":
                 if ((self.lidar_test_state / "active").exists() or
                         self._running("lidar_test_start") or self._running("lidar_test_stop")):
