@@ -272,6 +272,19 @@ class Bridge:
             finally:
                 if proc.stdout:
                     proc.stdout.close()
+            # pid_stop.sh succeeded only after MANUAL, stopped wheels and
+            # DRIVE-node cleanup were verified. Retire its old monitoring shell
+            # before announcing STOPPED; otherwise route_select may still see
+            # a running 'drive' job and reject the next route.
+            if name == "drive_stop" and code == 0:
+                if not self._settle_verified_drive_watch():
+                    code = 6
+                    with self.lock:
+                        stop_job = self.job_states.get("drive_stop")
+                        if stop_job is not None:
+                            stop_job["failure_detail"] = (
+                                "Physical MANUAL stop verified, but old DRIVE watcher "
+                                "did not exit; route change remains blocked")
             with self.lock:
                 if self.jobs.get(name) is proc:
                     self.jobs.pop(name, None)
@@ -357,6 +370,35 @@ class Bridge:
     def _running(self, name):
         p = self.jobs.get(name)
         return p is not None and p.poll() is None
+
+    def _settle_verified_drive_watch(self):
+        """Retire a stale DRIVE watcher ONLY after pid_stop.sh verified MANUAL stop.
+
+        An exited PID shell alone is never evidence that a wheelchair stopped.
+        This routine never touches the READY stack or DWA.
+        """
+        with self.lock:
+            drive_proc = self.jobs.get("drive")
+        if drive_proc is None or drive_proc.poll() is not None:
+            return True
+        try:
+            drive_proc.wait(timeout=3.0)
+            return True
+        except subprocess.TimeoutExpired:
+            LOG.warning("Verified stop: DRIVE watcher still alive; sending SIGTERM to its own session")
+        try:
+            os.killpg(drive_proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return drive_proc.poll() is not None
+        except OSError:
+            LOG.exception("Could not terminate verified-stopped DRIVE watcher")
+            return False
+        try:
+            drive_proc.wait(timeout=4.0)
+            return True
+        except subprocess.TimeoutExpired:
+            LOG.error("Verified-stopped DRIVE watcher still alive after SIGTERM")
+            return False
 
     def _cancel_drive_launch(self):
         """Cancel a still-starting DRIVE shell before asking pid_stop.sh to stop."""
@@ -478,7 +520,7 @@ class Bridge:
                     raise ValueError("Invalid route")
                 with self.lock:
                     if self._running("drive") or self.drive_phase in ("RUNNING", "CHECKING", "START_REQUEST_ACCEPTED", "STOPPING", "GOAL_ARRIVED", "NEEDS_STOP", "STOP_UNVERIFIED"):
-                        raise RuntimeError("Cannot change route while DRIVE is active")
+                        raise RuntimeError("Cannot change route: DRIVE phase=%s, drive_job_running=%s" % (self.drive_phase, self._running("drive")))
                     if self.selected_route != name:
                         self.latest.pop("pose", None)
                     self.selected_route = name
@@ -556,7 +598,12 @@ class Bridge:
                             or self._running("drive_reconcile")
                             or self._running("ready_start") or self._running("ready_stop")
                             or self.ready_stopping):
-                        raise RuntimeError("DRIVE/STOP/READY job still active; cannot verify stopped session")
+                        active_jobs = [name for name in ("drive", "drive_stop", "drive_reconcile",
+                                                         "ready_start", "ready_stop")
+                                           if self._running(name)]
+                        raise RuntimeError(
+                            "Cannot reconcile stopped session: active_jobs=%s, ready_stopping=%s"
+                            % (active_jobs, self.ready_stopping))
                     if self.drive_phase in ("CHECKING", "START_REQUEST_ACCEPTED", "RUNNING"):
                         raise RuntimeError("Drive may be active; use DRIVE STOP first")
                 response.update(self._run_job("drive_reconcile", ["pid_drive_reconcile.sh", str(self.scripts)]))
