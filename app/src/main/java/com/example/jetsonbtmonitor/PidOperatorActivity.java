@@ -97,6 +97,9 @@ public final class PidOperatorActivity extends AppCompatActivity {
     private String selectedRoute = "A_to_D5";
     private String currentDrivePhase = "IDLE";
     private boolean driveConfirmed = false;
+    // Separate live NUC controller evidence and watcher liveness from bridge session phase.
+    private boolean externalDriveObserved = false;
+    private boolean driveWatcherRunning = false;
     private boolean stopPending = false;
     private long stopRequestedAtMs = 0L;
     private boolean driveReconciling = false;
@@ -518,7 +521,11 @@ public final class PidOperatorActivity extends AppCompatActivity {
         connect.setEnabled(!connected);
         boolean active = Arrays.asList("CHECKING", "START_REQUEST_ACCEPTED",
                 "RUNNING", "STOPPING", "STATUS_STALE", "GOAL_ARRIVED",
-                "NEEDS_STOP", "STOP_UNVERIFIED").contains(currentDrivePhase) || driveReconciling;
+                "NEEDS_STOP", "STOP_UNVERIFIED").contains(currentDrivePhase)
+                || driveReconciling || driveWatcherRunning || externalDriveObserved;
+        // While a terminal or app DRIVE is still active, allow monitoring only.
+        // The backend remains the final authority on route commands.
+        routeSpinner.setEnabled(link && !testActive && !active);
         boolean startReady = "READY".equals(readyPhase) && "MANUAL".equals(wheelMode);
         driveStart.setEnabled(link && !active && !testActive && startReady);
         // At the goal, or after manual intervention, explicit STOP must still be possible.
@@ -528,7 +535,8 @@ public final class PidOperatorActivity extends AppCompatActivity {
                         "STOPPING", "STATUS_STALE", "GOAL_ARRIVED", "NEEDS_STOP",
                         "STOP_UNVERIFIED").contains(currentDrivePhase));
         if (driveReconcile != null) {
-            driveReconcile.setEnabled(link && !testActive && !driveReconciling &&
+            driveReconcile.setEnabled(link && !testActive && !driveReconciling
+                    && !externalDriveObserved && !driveWatcherRunning &&
                     Arrays.asList("IDLE", "STOPPING", "STOP_UNVERIFIED", "NEEDS_STOP",
                             "GOAL_ARRIVED", "REJECTED", "FAILED", "UNKNOWN",
                             "STOPPED").contains(currentDrivePhase));
@@ -724,6 +732,11 @@ public final class PidOperatorActivity extends AppCompatActivity {
             } else if ("ack".equals(type)) {
                 String cmd = f.optString("command", "알 수 없는 명령");
                 if (f.optBoolean("ok", false)) {
+                    // Acceptance clears the previous command rejection message,
+                    // not the physical-stop or successful-start verification.
+                    if ("route_select".equals(cmd) || "drive_start".equals(cmd)
+                            || "drive_stop".equals(cmd) || "drive_reconcile".equals(cmd))
+                        lastDriveCommandError = null;
                     if ("drive_stop".equals(cmd))
                         driveNote.setText("NUC가 주행 종료 명령 접수 · 실제 정차 검증 대기");
                     if ("drive_reconcile".equals(cmd))
@@ -1122,7 +1135,21 @@ public final class PidOperatorActivity extends AppCompatActivity {
         String phase = f.optString("drive_phase", "UNKNOWN");
         currentDrivePhase = phase;
         driveConfirmed = f.optBoolean("drive_confirmed", false);
-        if ("GOAL_ARRIVED".equals(phase)) {
+        JSONObject runningJobs = f.optJSONObject("jobs_running");
+        driveWatcherRunning = runningJobs != null && runningJobs.optBoolean("drive", false);
+        JSONObject liveDrive = f.optJSONObject("drive");
+        String controllerState = liveDrive == null ? "" : liveDrive.optString("state", "");
+        boolean controllerActive = Arrays.asList("RUNNING", "OBSTACLE_STOP",
+                "GOAL_STOPPING").contains(controllerState);
+        // A terminal-started DRIVE is not confirmed by the app's start handshake.
+        // Display read-only Safety when live controller status AND AUTO wheel
+        // feedback agree. Neither condition alone proves it is safe to command.
+        externalDriveObserved = !driveConfirmed && controllerActive && "AUTO".equals(mode);
+        if (externalDriveObserved) {
+            driveNote.setText("외부 터미널의 FF-PID 실행 감지 · 앱은 모니터링 전용입니다.");
+        } else if ("STOPPED".equals(phase) && driveWatcherRunning) {
+            driveNote.setText("정차 보고 후 DRIVE 감시 작업이 아직 실행 중입니다. 종료 확인 대기.");
+        } else if ("GOAL_ARRIVED".equals(phase)) {
             driveNote.setText("목적지에 도착했습니다. 정차 후 [주행 종료]를 눌러 세션을 마무리하세요.");
         } else if ("NEEDS_STOP".equals(phase)) {
             driveNote.setText("수동 개입 또는 주행 프로세스 종료 · [주행 종료]로 정차 상태를 확인하세요.");
@@ -1130,9 +1157,10 @@ public final class PidOperatorActivity extends AppCompatActivity {
             driveNote.setText("정지 확인 실패 · 실제 바퀴 정지와 수동 모드를 확인한 뒤 [주행 종료]를 다시 누르세요.");
         }
         // Frequent telemetry must not hide the NUC's exact rejection reason.
-        if (lastDriveCommandError != null) driveNote.setText(lastDriveCommandError);
+        if (lastDriveCommandError != null && !externalDriveObserved) driveNote.setText(lastDriveCommandError);
         JSONObject safety = f.optJSONObject("safety");
-        if (driveConfirmed && ("RUNNING".equals(phase) || "STATUS_STALE".equals(phase))) {
+        if ((driveConfirmed && ("RUNNING".equals(phase) || "STATUS_STALE".equals(phase)))
+                || externalDriveObserved) {
             if (safety == null || "STATUS_STALE".equals(phase)) {
                 showUnknownSafety("최신 Safety 데이터를 확인할 수 없습니다.");
             } else {
