@@ -531,9 +531,10 @@ public final class PidOperatorActivity extends AppCompatActivity {
         // At the goal, or after manual intervention, explicit STOP must still be possible.
         // Do not permanently lock STOP merely because the cached phase is STOPPING.
         driveStop.setEnabled(link && !testActive && !stopPending &&
+                (driveWatcherRunning || externalDriveObserved ||
                 Arrays.asList("CHECKING", "START_REQUEST_ACCEPTED", "RUNNING",
                         "STOPPING", "STATUS_STALE", "GOAL_ARRIVED", "NEEDS_STOP",
-                        "STOP_UNVERIFIED").contains(currentDrivePhase));
+                        "STOP_UNVERIFIED").contains(currentDrivePhase)));
         if (driveReconcile != null) {
             driveReconcile.setEnabled(link && !testActive && !driveReconciling
                     && !externalDriveObserved && !driveWatcherRunning &&
