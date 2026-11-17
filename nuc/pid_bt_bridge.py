@@ -898,6 +898,11 @@ class Bridge:
                 "drive_terminal_reason": self.drive_terminal_reason,
                 "drive_confirmed": self.drive_confirmed,
                 "drive_reconcile_running": self._running("drive_reconcile"),
+                # Report actual subprocess liveness separately from drive_phase.
+                # Android must not treat STOPPED as proof that the watcher exited.
+                "jobs_running": {name: self._running(name) for name in
+                                 ("drive", "drive_stop", "drive_reconcile",
+                                  "ready_start", "ready_stop")},
                 "drive": drive, "last_preflight": self.last_preflight,
                 "last_drive_event": self.last_drive_event,
                 "safety": safety,
