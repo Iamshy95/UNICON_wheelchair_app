@@ -50,6 +50,7 @@ class Bridge:
         self.drive_confirmed = False
         self.drive_rejection_sent = False
         self.drive_terminal_reason = None  # GOAL_REACHED / MANUAL_INTERVENTION / unexpected exit
+        self.drive_terminal_stop_verified = False
         self.ready_stopping = False
         self.stop_alarm = None
         self._pose_transform_cache = {}
@@ -141,17 +142,14 @@ class Bridge:
                 elif obj.get("status") in ("GOAL_REACHED", "MANUAL_INTERVENTION"):
                     self._mark_drive_interrupted(obj["status"])
                 elif obj.get("status") == "STOP_VERIFIED":
-                    # A terminal Ctrl+C or external pid_stop.sh completed
-                    # physical STOP; no additional app acknowledgement needed.
-                    # A goal arrival alone remains pending operator completion.
-                    if self.drive_terminal_reason != "GOAL_REACHED" and self.drive_phase != "STOPPING":
-                        self.drive_phase = "STOPPED"
-                        self.active_route = None
-                        self.drive_confirmed = False
-                        self.drive_terminal_reason = None
-                        self._emit({"type": "drive_result", "status": "STOPPED",
-                                    "reason": "TERMINAL_STOP_VERIFIED",
-                                    "message": "터미널 주행 종료 및 MANUAL 정차 확인 완료"})
+                    # Physical MANUAL stop is verified, but the DRIVE monitor
+                    # shell might still be alive. Wait until that shell exits
+                    # before allowing another route. Goal arrival still requires
+                    # a separate operator DRIVE STOP, as before.
+                    if self.drive_terminal_reason != "GOAL_REACHED":
+                        self.drive_terminal_stop_verified = True
+                        if self.drive_phase != "STOPPING":
+                            self.drive_phase = "STOPPING"
                 elif obj.get("status") == "STOP_UNVERIFIED":
                     if self.drive_phase != "STOPPING":
                         self.drive_phase = "STOP_UNVERIFIED"
@@ -305,6 +303,7 @@ class Bridge:
                         self.drive_accepted = False
                         self.drive_rejection_sent = False
                         self.drive_terminal_reason = None
+                        self.drive_terminal_stop_verified = False
                         self.last_preflight = None
                         LOG.info("drive_reconcile: verified stopped MANUAL; stale session cleared")
                         self._emit({"type": "drive_result", "status": "STOPPED",
@@ -327,7 +326,20 @@ class Bridge:
                     if code == 0:
                         self.ready_state = "STOPPED"
                 elif name == "drive":
-                    if self.drive_phase not in ("STOPPING", "STOPPED", "STOP_UNVERIFIED"):
+                    if self.drive_terminal_stop_verified and self.drive_phase != "STOP_UNVERIFIED":
+                        # The terminal event verified physical MANUAL stop, and
+                        # reaching here additionally verifies watcher exit.
+                        if not self._running("drive_stop") and self.drive_phase == "STOPPING":
+                            self.drive_phase = "STOPPED"
+                            self.active_route = None
+                            self.drive_confirmed = False
+                            self.drive_accepted = False
+                            self.drive_terminal_reason = None
+                            self._emit({"type": "drive_result", "status": "STOPPED",
+                                        "reason": "TERMINAL_STOP_VERIFIED",
+                                        "message": "MANUAL 정차 및 DRIVE 감시 종료 확인 완료"})
+                        self.drive_terminal_stop_verified = False
+                    elif self.drive_phase not in ("STOPPING", "STOPPED", "STOP_UNVERIFIED"):
                         if not self.drive_confirmed:
                             self._reject_drive("SCRIPT_FAILED",
                                                (job or {}).get("detail", "DRIVE script exited"))
@@ -347,6 +359,7 @@ class Bridge:
                         self.active_route = None
                         self.drive_terminal_reason = None
                         self.drive_confirmed = False
+                        self.drive_terminal_stop_verified = False
                         self._emit({"type": "drive_result", "status": "STOPPED",
                                     "reason": "STOP_VERIFIED",
                                     "message": "MANUAL 및 정차 확인 완료"})
@@ -640,6 +653,7 @@ class Bridge:
                     self.drive_confirmed = False
                     self.drive_rejection_sent = False
                     self.drive_terminal_reason = None
+                    self.drive_terminal_stop_verified = False
                     self.last_preflight = None
                     self.last_drive_event = None
                 try:
