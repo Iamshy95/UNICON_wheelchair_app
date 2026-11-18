@@ -1142,10 +1142,16 @@ public final class PidOperatorActivity extends AppCompatActivity {
         String controllerState = liveDrive == null ? "" : liveDrive.optString("state", "");
         boolean controllerActive = Arrays.asList("RUNNING", "OBSTACLE_STOP",
                 "GOAL_STOPPING").contains(controllerState);
-        // A terminal-started DRIVE is not confirmed by the app's start handshake.
-        // Display read-only Safety when live controller status AND AUTO wheel
-        // feedback agree. Neither condition alone proves it is safe to command.
-        externalDriveObserved = !driveConfirmed && controllerActive && "AUTO".equals(mode);
+        // During an obstacle hold, FF-PID does not necessarily republish its
+        // unchanged OBSTACLE_STOP state, so /ff_pid/status may expire even while
+        // /pid_safety/status stays fresh. Safety is an independent active DRIVE
+        // node and is shown read-only only with fresh AUTO wheel feedback.
+        JSONObject activeSafety = f.optJSONObject("safety");
+        boolean safetyLive = activeSafety != null
+                && Arrays.asList("STOP", "SLOW", "CLEAR").contains(
+                        activeSafety.optString("state", ""));
+        externalDriveObserved = !driveConfirmed && "AUTO".equals(mode)
+                && (controllerActive || (safetyLive && !"STOPPED".equals(phase)));
         if (externalDriveObserved) {
             driveNote.setText("외부 터미널의 FF-PID 실행 감지 · 앱은 모니터링 전용입니다.");
         } else if ("STOPPED".equals(phase) && driveWatcherRunning) {
