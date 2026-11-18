@@ -1151,7 +1151,7 @@ public final class PidOperatorActivity extends AppCompatActivity {
                 && Arrays.asList("STOP", "SLOW", "CLEAR").contains(
                         activeSafety.optString("state", ""));
         externalDriveObserved = !driveConfirmed && "AUTO".equals(mode)
-                && (controllerActive || (safetyLive && !"STOPPED".equals(phase)));
+                && (controllerActive || safetyLive);
         if (externalDriveObserved) {
             driveNote.setText("외부 터미널의 FF-PID 실행 감지 · 앱은 모니터링 전용입니다.");
         } else if ("STOPPED".equals(phase) && driveWatcherRunning) {
