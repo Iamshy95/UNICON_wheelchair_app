@@ -284,8 +284,9 @@ public final class BluetoothWheelchairClient {
                 }
             } catch (IOException exception) {
                 if (callback != null) callback.onError("Bluetooth 명령 전송 실패", exception);
-                // A transmit failure must not disable automatic reconnection.
-                forceReconnect();
+                // Close only the socket that failed. A stale writer cannot
+                // disconnect a newer connection established during the write.
+                closeIfCurrent(submittedSocket);
             }
         });
     }
@@ -356,6 +357,14 @@ public final class BluetoothWheelchairClient {
         synchronized (socketLock) {
             return socket == candidate;
         }
+    }
+
+    private void closeIfCurrent(BluetoothSocket candidate) {
+        synchronized (socketLock) {
+            if (socket != candidate) return;
+        }
+        // The owning reader clears the shared socket and schedules reconnect.
+        closeQuietly(candidate);
     }
 
     private void closeCurrentSocket() {
