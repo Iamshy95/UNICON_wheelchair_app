@@ -54,6 +54,8 @@ public final class BluetoothWheelchairClient {
 
     private Callback callback;
     private final ExecutorService executor = Executors.newCachedThreadPool();
+    // The connection reader may block, but outgoing commands must remain FIFO.
+    private final ExecutorService commandExecutor = Executors.newSingleThreadExecutor();
     private final Object socketLock = new Object();
     private final Object writeLock = new Object();
 
@@ -70,6 +72,8 @@ public final class BluetoothWheelchairClient {
     private static final long RECONNECT_MAX_DELAY_MS = 15000L;
     private volatile boolean autoReconnect;
     private volatile BluetoothDevice lastDevice;
+    // Reject tasks from an obsolete manual connection/reconnect generation.
+    private volatile long connectionGeneration = 0L;
     private final AtomicBoolean reconnectInFlight = new AtomicBoolean(false);
 
     public BluetoothWheelchairClient(Callback callback) {
@@ -91,63 +95,54 @@ public final class BluetoothWheelchairClient {
     }
 
     public void connect(BluetoothDevice device) {
-        autoReconnect = false;          // stop any retry loop aimed at the old device
+        connectionGeneration++;
+        autoReconnect = false;
         closeLink();
-        this.connectedDevice = device;
-        this.lastDevice = device;
-        this.autoReconnect = true;
-        attempt(device, 0);
+        reconnectInFlight.set(false);
+        lastDevice = device;
+        autoReconnect = true;
+        attempt(device, 0, connectionGeneration);
     }
 
-    /**
-     * One connection attempt; on failure it schedules the next itself.
-     *
-     * @param attemptNumber 0 for the operator's own press, ≥1 for a retry, which
-     *                      is what decides whether a failure is reported as an
-     *                      error or as a quiet "still trying".
-     */
-    private void attempt(BluetoothDevice device, int attemptNumber) {
+    /** Launch a connection attempt without allowing an older attempt to take over. */
+    private void attempt(BluetoothDevice device, int attemptNumber, long generation) {
         executor.execute(() -> {
+            if (!autoReconnect || generation != connectionGeneration) return;
             try {
                 BluetoothSocket nextSocket = connectSocket(device, attemptNumber == 0);
                 synchronized (socketLock) {
+                    if (!autoReconnect || generation != connectionGeneration || socket != null) {
+                        closeQuietly(nextSocket);
+                        return;
+                    }
                     socket = nextSocket;
+                    connectedDevice = device;
                     running = true;
                 }
                 reconnectInFlight.set(false);
-                if (callback != null) {
-                    callback.onConnected(device);
-                }
-                readLoop(nextSocket);
+                if (callback != null) callback.onConnected(device);
+                readLoop(nextSocket, generation);
             } catch (IOException | SecurityException exception) {
-                closeCurrentSocket();
+                // The failed attempt does not own 'socket'. Never close a newer
+                // connection that may have succeeded concurrently.
+                if (!autoReconnect || generation != connectionGeneration) return;
                 if (attemptNumber == 0 && callback != null) {
                     callback.onError("Bluetooth 연결에 실패했습니다: " + exception.getMessage(), exception);
                 }
                 reconnectInFlight.set(false);
-                scheduleReconnect(attemptNumber + 1);
+                scheduleReconnect(attemptNumber + 1, generation);
             }
         });
     }
 
-    /**
-     * Back off 2s, 4s, 8s, then every 15s for as long as the operator leaves the
-     * dashboard open. Retrying flat out would hammer SDP and the radio; giving up
-     * would strand a dashboard that is one step out of range from working again.
-     */
-    private void scheduleReconnect(int attemptNumber) {
+    /** Retry only for the same explicitly selected connection generation. */
+    private void scheduleReconnect(int attemptNumber, long generation) {
         BluetoothDevice device = lastDevice;
-        if (!autoReconnect || device == null) {
-            return;
-        }
-        if (!reconnectInFlight.compareAndSet(false, true)) {
-            return;                     // a retry is already queued
-        }
+        if (!autoReconnect || device == null || generation != connectionGeneration) return;
+        if (!reconnectInFlight.compareAndSet(false, true)) return;
         long delay = Math.min(RECONNECT_FIRST_DELAY_MS << Math.min(attemptNumber - 1, 3),
                               RECONNECT_MAX_DELAY_MS);
-        if (callback != null) {
-            callback.onReconnecting(attemptNumber, delay);
-        }
+        if (callback != null) callback.onReconnecting(attemptNumber, delay);
         executor.execute(() -> {
             try {
                 Thread.sleep(delay);
@@ -156,11 +151,11 @@ public final class BluetoothWheelchairClient {
                 reconnectInFlight.set(false);
                 return;
             }
-            if (!autoReconnect || lastDevice == null) {
+            if (!autoReconnect || lastDevice == null || generation != connectionGeneration) {
                 reconnectInFlight.set(false);
                 return;
             }
-            attempt(lastDevice, attemptNumber);
+            attempt(device, attemptNumber, generation);
         });
     }
 
@@ -261,103 +256,124 @@ public final class BluetoothWheelchairClient {
     }
 
     public void sendLine(String line) {
-        executor.execute(() -> {
-            BluetoothSocket currentSocket;
+        // Capture the current connection at submission time. A delayed command
+        // must NOT be replayed into a later Bluetooth session.
+        final BluetoothSocket submittedSocket;
+        synchronized (socketLock) {
+            submittedSocket = socket;
+        }
+        commandExecutor.execute(() -> {
             synchronized (socketLock) {
-                currentSocket = socket;
-            }
-            if (currentSocket == null || !currentSocket.isConnected()) {
-                if (callback != null) {
-                    callback.onError("NUC에 블루투스로 연결되어 있지 않습니다.", null);
+                if (submittedSocket == null || socket != submittedSocket ||
+                        !running || !submittedSocket.isConnected()) {
+                    if (callback != null) callback.onError(
+                            "명령을 전송하지 못했습니다. Bluetooth 연결 상태를 확인하세요.", null);
+                    return;
                 }
-                return;
             }
-
             try {
                 synchronized (writeLock) {
-                    OutputStream outputStream = currentSocket.getOutputStream();
+                    // Ordered command sends; re-check identity immediately
+                    // before writing because reconnect may have occurred.
+                    synchronized (socketLock) {
+                        if (socket != submittedSocket || !running) return;
+                    }
+                    OutputStream outputStream = submittedSocket.getOutputStream();
                     outputStream.write((line + "\n").getBytes(StandardCharsets.UTF_8));
                     outputStream.flush();
                 }
             } catch (IOException exception) {
-                if (callback != null) {
-                    callback.onError("블루투스 명령 전송 실패", exception);
-                }
-                disconnect();
+                if (callback != null) callback.onError("Bluetooth 명령 전송 실패", exception);
+                // Close only the socket that failed. A stale writer cannot
+                // disconnect a newer connection established during the write.
+                closeIfCurrent(submittedSocket);
             }
         });
     }
 
-    /**
-     * Drop the socket but keep trying to get it back.
-     *
-     * A dead bridge does not necessarily fault the RFCOMM socket: the ACL link
-     * stays up and {@code readLine()} blocks forever, so the dashboard sits there
-     * looking connected with telemetry frozen at whatever arrived last. Something
-     * watching the data has to break that, and closing the socket is what makes
-     * the read loop unwind into the normal reconnect path.
-     */
+    /** Close only the current socket; its reader schedules reconnection. */
     public void forceReconnect() {
-        closeCurrentSocket();
+        BluetoothSocket old;
+        synchronized (socketLock) {
+            old = socket;
+        }
+        closeQuietly(old);
     }
 
-    /** Operator-initiated: stays disconnected until someone connects again. */
+    /** Explicit disconnect: no automatic retry and no stale callback takeover. */
     public void disconnect() {
+        connectionGeneration++;
         autoReconnect = false;
         lastDevice = null;
+        reconnectInFlight.set(false);
         closeLink();
     }
 
     private void closeLink() {
         running = false;
         closeCurrentSocket();
-        this.connectedDevice = null;
+        connectedDevice = null;
     }
 
     public void shutdown() {
         disconnect();
+        commandExecutor.shutdownNow();
         executor.shutdownNow();
     }
 
-    private void readLoop(BluetoothSocket activeSocket) {
+    private void readLoop(BluetoothSocket activeSocket, long generation) {
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(activeSocket.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
-            while (running && (line = reader.readLine()) != null) {
-                if (!line.trim().isEmpty()) {
-                    if (callback != null) {
-                        callback.onLineReceived(line.trim());
-                    }
+            while (running && isCurrentSocket(activeSocket)
+                    && (line = reader.readLine()) != null) {
+                if (!line.trim().isEmpty() && isCurrentSocket(activeSocket)) {
+                    if (callback != null) callback.onLineReceived(line.trim());
                 }
             }
         } catch (IOException exception) {
-            if (running && callback != null) {
-                callback.onError("블루투스 수신 중 연결이 끊겼습니다.", exception);
+            if (running && isCurrentSocket(activeSocket) && callback != null) {
+                callback.onError("Bluetooth 수신 중 연결이 끊겼습니다.", exception);
             }
         } finally {
-            closeCurrentSocket();
-            if (callback != null) {
-                callback.onDisconnected();
+            boolean owned;
+            synchronized (socketLock) {
+                owned = socket == activeSocket && generation == connectionGeneration;
+                if (owned) {
+                    socket = null;
+                    running = false;
+                    connectedDevice = null;
+                }
             }
-            // The dashboard has already been blanked by onDisconnected, so the
-            // retry cannot leave stale numbers on screen looking live.
-            scheduleReconnect(1);
+            closeQuietly(activeSocket);
+            if (owned) {
+                if (callback != null) callback.onDisconnected();
+                scheduleReconnect(1, generation);
+            }
         }
     }
 
-    private void closeCurrentSocket() {
-        BluetoothSocket currentSocket;
+    private boolean isCurrentSocket(BluetoothSocket candidate) {
         synchronized (socketLock) {
-            currentSocket = socket;
+            return socket == candidate;
+        }
+    }
+
+    private void closeIfCurrent(BluetoothSocket candidate) {
+        synchronized (socketLock) {
+            if (socket != candidate) return;
+        }
+        // The owning reader clears the shared socket and schedules reconnect.
+        closeQuietly(candidate);
+    }
+
+    private void closeCurrentSocket() {
+        BluetoothSocket old;
+        synchronized (socketLock) {
+            old = socket;
             socket = null;
         }
-
-        if (currentSocket != null) {
-            try {
-                currentSocket.close();
-            } catch (IOException ignored) {
-            }
-        }
+        closeQuietly(old);
     }
 
     private void closeQuietly(BluetoothSocket socketToClose) {

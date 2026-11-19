@@ -36,6 +36,7 @@ NUC OS에 `python3-dbus`, `python3-gi`와 BlueZ가 설치되어 있어야 합니
 | `{"command":"route_select","route":"A_to_D5"}` | 6개 경로 중 선택 및 경로 JSON 전송 |
 | `{"command":"drive_start","route":"A_to_D5"}` | `pid_drive.sh A_to_D5` 비동기 실행 |
 | `{"command":"drive_stop"}` | `pid_stop.sh` 실행 |
+| `{"command":"drive_reconcile"}` | 앱 전용 세션 상태 복구: 주행 프로세스 없음 + ROS 노드 없음 + MANUAL/양쪽 바퀴 정지 3회 검증 후에만 STOPPED로 전이 (명령 전송만으로 정지했다고 판단하지 않음) |
 | `{"command":"estop"}` | 소프트웨어 정지 요청 후 재출발 금지 래치 |
 | `{"command":"estop_release"}` | 앱 측 소프트웨어 래치만 해제하며 주행 재개는 하지 않음 |
 | `{"command":"route"}` | 현재 선택 경로 좌표(JSON waypoints, 지도 이미지 아님) 전송 |
@@ -78,3 +79,12 @@ NUC OS에 `python3-dbus`, `python3-gi`와 BlueZ가 설치되어 있어야 합니
 - PID/Safety: https://github.com/Iamshy95/UNICON_wheelchair_PID
 
 앱 전체의 원저작자/출처는 루트 `README.md`, `NOTICE.md`, `LICENSE`에 명시되어 있습니다.
+
+
+## 2026-11-13 앱 종료 실패 복구 패치 (검증 전)
+
+- 이 변경은 독립 브릿지 `pid_bt_bridge.py`, 같은 디렉터리의 **새로운** `pid_drive_reconcile.sh` 및 Android 앱을 **함께 배포**해야 작동합니다. 기존 FF-PID/Safety/ROS 주행 스크립트는 수정하지 않습니다.
+- `drive_reconcile`은 모터에 제어 명령을 내리지 않고, 이미 배포된 `pid_drive_check.py`로 `MANUAL + 양쪽 바퀴 정지` 피드백을 확인하고 /ff_pid, /pid_safety, /pid_astar_planner ROS 노드와 주행/종료 프로세스가 모두 없을 때만 브릿지의 오래된 상태를 지웁니다.
+- 검증에 실패하면 상태를 지우지 않습니다. 앱은 정확한 거부 사유를 유지해 표시하며, `STOPPING`에 갇혀도 일정 시간 경과 후 종료를 **재시도**할 수 있습니다(정지 완료로 간주하지 않음).
+- 실제 앱/NUC 배포 전에는 **무인·바퀴를 지면에서 분리한 시험 장치** 등 안전 확보된 환경에서 `STOP_UNVERIFIED`, 신호 끊김, 동시 STOP, 종료 중 수동 이동을 확인해야 합니다. 어떠한 경우에도 물리적 E-stop을 대체하지 않습니다.
+- NUC에 기존 서비스가 실행 중이면 소스만 복사해도 반영되지 않습니다. 재시작은 실제 주행이 없고 완전히 정지된 것을 확인한 뒤에만 실시합니다. 기존 운영 배포 파일과 업데이트 파일을 먼저 비교하고 백업합니다.
